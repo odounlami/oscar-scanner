@@ -12,33 +12,19 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 SEEN_FILE = "seen_posts.json"
 
-# ─── Mots-clés ────────────────────────────────────────────────────────────────
-
 KEYWORDS = [
-    # Demandes directes
     "cherche développeur", "cherche un développeur", "besoin développeur",
     "besoin d'un dev", "cherche dev web", "recherche développeur web",
     "besoin site web", "créer site web", "faire un site", "refaire site",
     "application mobile", "cherche freelance", "mission freelance",
     "développeur freelance", "dev freelance", "next.js", "react freelance",
-    # Anglais
     "looking for developer", "need a developer", "hire developer",
     "web developer needed", "freelance developer", "build website",
-    # Contexte local
     "site web Bénin", "développeur Cotonou", "dev Abidjan", "site web Afrique",
     "application Dakar", "développeur Lomé",
 ]
 
-# ─── Sources Google Alerts RSS ─────────────────────────────────────────────────
-# Instructions pour générer tes propres alertes :
-# 1. Va sur https://www.google.com/alerts
-# 2. Crée une alerte pour chaque mot-clé important
-# 3. Choisis "Flux RSS" comme mode de livraison
-# 4. Copie l'URL RSS et ajoute-la ici
-
 GOOGLE_ALERTS_RSS = [
-    # Remplace ces URLs par tes vraies URLs Google Alerts
-    # Exemple : "https://www.google.com/alerts/feeds/XXXXX/XXXXX"
     os.getenv("ALERT_RSS_1", ""),
     os.getenv("ALERT_RSS_2", ""),
     os.getenv("ALERT_RSS_3", ""),
@@ -46,14 +32,10 @@ GOOGLE_ALERTS_RSS = [
     os.getenv("ALERT_RSS_5", ""),
 ]
 
-# Sources RSS publiques supplémentaires (forums, blogs tech Afrique)
 EXTRA_RSS = [
-    "https://www.journalducm.com/feed/",           # Marketing digital Cameroun
-    "https://www.abidjan.net/rss.asp",             # Petites annonces Côte d'Ivoire
-    "https://bj.jolome.com/rss/annonces.xml",      # Annonces Bénin
+    "https://www.journalducm.com/feed/",
+    "https://bj.jolome.com/rss/annonces.xml",
 ]
-
-# ─── Utilitaires ──────────────────────────────────────────────────────────────
 
 def load_seen():
     if os.path.exists(SEEN_FILE):
@@ -74,9 +56,8 @@ def matches(text):
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️  Telegram non configuré — affichage console :")
-        print(message)
-        return
+        print("⚠️  Telegram non configuré")
+        return False
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -87,15 +68,33 @@ def send_telegram(message):
     try:
         r = requests.post(url, json=payload, timeout=10)
         r.raise_for_status()
+        return True
     except Exception as e:
-        print(f"Erreur Telegram : {e}")
+        print(f"❌ Erreur Telegram : {e}")
+        return False
+
+def test_telegram():
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    msg = (
+        f"✅ <b>Oscar Scanner — Démarrage</b>\n\n"
+        f"Le scanner est actif et tourne correctement.\n"
+        f"🕐 {now}\n\n"
+        f"📡 Sources configurées : {sum(1 for u in GOOGLE_ALERTS_RSS if u)} Google Alerts\n"
+        f"🔍 Mots-clés actifs : {len(KEYWORDS)}\n\n"
+        f"Tu recevras une notif dès qu'une opportunité est détectée."
+    )
+    ok = send_telegram(msg)
+    if ok:
+        print("✅ Telegram OK — message de confirmation envoyé")
+    else:
+        print("❌ Telegram KO — vérifie TELEGRAM_TOKEN et TELEGRAM_CHAT_ID")
+    return ok
 
 def format_message(entry, source_name):
     title = entry.get("title", "Sans titre")[:120]
     link = entry.get("link", "")
-    summary = entry.get("summary", "")[:200].replace("<b>", "").replace("</b>", "").replace("<br>", " ")
+    summary = entry.get("summary", "")[:250].replace("<b>", "").replace("</b>", "").replace("<br>", " ")
     date = entry.get("published", datetime.now().strftime("%d/%m/%Y"))
-
     return (
         f"🎯 <b>Nouvelle opportunité</b>\n"
         f"📌 <b>{title}</b>\n\n"
@@ -105,15 +104,15 @@ def format_message(entry, source_name):
         f"🕐 {date}"
     )
 
-# ─── Scanner ──────────────────────────────────────────────────────────────────
-
 def scan_feed(url, source_name, seen):
     if not url:
         return 0
     found = 0
     try:
         feed = feedparser.parse(url)
-        for entry in feed.entries:
+        entries = feed.entries
+        print(f"   → {source_name} : {len(entries)} entrée(s) trouvée(s)")
+        for entry in entries:
             pid = post_id(entry)
             if pid in seen:
                 continue
@@ -124,38 +123,18 @@ def scan_feed(url, source_name, seen):
                 found += 1
             seen.add(pid)
     except Exception as e:
-        print(f"Erreur sur {source_name} : {e}")
+        print(f"   ❌ Erreur sur {source_name} : {e}")
     return found
 
-def run():
-    print(f"\n🔍 Scan démarré — {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-    seen = load_seen()
-    total = 0
-
-    # Google Alerts
-    alerts = [
-        ("cherche développeur web", os.getenv("ALERT_RSS_1", "")),
-        ("besoin site web freelance", os.getenv("ALERT_RSS_2", "")),
-        ("mission dev Afrique", os.getenv("ALERT_RSS_3", "")),
-        ("next.js freelance", os.getenv("ALERT_RSS_4", "")),
-        ("développeur Cotonou Bénin", os.getenv("ALERT_RSS_5", "")),
-    ]
-    for name, url in alerts:
-        total += scan_feed(url, f"Google Alerts — {name}")
-
-    # Sources RSS extra
-    for url in EXTRA_RSS:
-        total += scan_feed(url, url.split("/")[2], seen)
-
-    save_seen(seen)
-    print(f"✅ Scan terminé — {total} nouvelle(s) opportunité(s) envoyée(s)")
-
-    if total == 0:
-        print("   (Rien de nouveau pour l'instant — normal les premières heures)")
-
 if __name__ == "__main__":
-    # Correction du bug : seen manquait dans les appels scan_feed
     print(f"\n🔍 Scan démarré — {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+
+    # Test Telegram au démarrage
+    telegram_ok = test_telegram()
+    if not telegram_ok:
+        print("⚠️  Arrêt — Telegram non fonctionnel")
+        exit(1)
+
     seen = load_seen()
     total = 0
 
@@ -163,14 +142,17 @@ if __name__ == "__main__":
         ("cherche développeur web", os.getenv("ALERT_RSS_1", "")),
         ("besoin site web freelance", os.getenv("ALERT_RSS_2", "")),
         ("mission dev Afrique", os.getenv("ALERT_RSS_3", "")),
-        ("next.js freelance", os.getenv("ALERT_RSS_4", "")),
+        ("next.js react freelance", os.getenv("ALERT_RSS_4", "")),
         ("développeur Cotonou Bénin", os.getenv("ALERT_RSS_5", "")),
     ]
+
+    print(f"\n📡 Scan des Google Alerts...")
     for name, url in alerts:
         total += scan_feed(url, f"Google Alerts — {name}", seen)
 
+    print(f"\n📡 Scan des sources extra...")
     for url in EXTRA_RSS:
         total += scan_feed(url, url.split("/")[2], seen)
 
     save_seen(seen)
-    print(f"✅ Scan terminé — {total} nouvelle(s) opportunité(s) envoyée(s)")
+    print(f"\n✅ Scan terminé — {total} nouvelle(s) opportunité(s) envoyée(s)")
