@@ -13,29 +13,48 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 SEEN_FILE = "seen_posts.json"
 
 KEYWORDS = [
+    # Français
     "cherche développeur", "cherche un développeur", "besoin développeur",
     "besoin d'un dev", "cherche dev web", "recherche développeur web",
     "besoin site web", "créer site web", "faire un site", "refaire site",
     "application mobile", "cherche freelance", "mission freelance",
     "développeur freelance", "dev freelance", "next.js", "react freelance",
+    "développeur react", "développeur next", "intégrateur web",
+    # Anglais
     "looking for developer", "need a developer", "hire developer",
     "web developer needed", "freelance developer", "build website",
+    "react developer", "next.js developer", "frontend developer",
+    # Contexte local
     "site web Bénin", "développeur Cotonou", "dev Abidjan", "site web Afrique",
-    "application Dakar", "développeur Lomé",
+    "application Dakar", "développeur Lomé", "développeur Afrique",
 ]
 
-GOOGLE_ALERTS_RSS = [
-    os.getenv("ALERT_RSS_1", ""),
-    os.getenv("ALERT_RSS_2", ""),
-    os.getenv("ALERT_RSS_3", ""),
-    os.getenv("ALERT_RSS_4", ""),
-    os.getenv("ALERT_RSS_5", ""),
+# ─── Sources RSS Indeed (immédiates, pas de délai) ────────────────────────────
+INDEED_RSS = [
+    ("Indeed — dev web freelance FR",     "https://fr.indeed.com/rss?q=d%C3%A9veloppeur+web+freelance&sort=date"),
+    ("Indeed — next.js react freelance",  "https://fr.indeed.com/rss?q=next.js+react+freelance&sort=date"),
+    ("Indeed — dev web remote",           "https://fr.indeed.com/rss?q=d%C3%A9veloppeur+web+remote&sort=date"),
+    ("Indeed — mission freelance react",  "https://fr.indeed.com/rss?q=mission+freelance+react&sort=date"),
+    ("Indeed — intégrateur web",          "https://fr.indeed.com/rss?q=int%C3%A9grateur+web+freelance&sort=date"),
 ]
 
+# ─── Sources RSS supplémentaires ──────────────────────────────────────────────
 EXTRA_RSS = [
-    "https://www.journalducm.com/feed/",
-    "https://bj.jolome.com/rss/annonces.xml",
+    ("Freelance-Informatique",  "https://www.freelance-informatique.fr/rss.php?type=mission&techno=react"),
+    ("Freelance-Informatique",  "https://www.freelance-informatique.fr/rss.php?type=mission&techno=next"),
+    ("Journal du CM",           "https://www.journalducm.com/feed/"),
 ]
+
+# ─── Google Alerts RSS (optionnel, se peuple avec le temps) ───────────────────
+GOOGLE_ALERTS_RSS = [
+    ("Google Alerts 1", os.getenv("ALERT_RSS_1", "")),
+    ("Google Alerts 2", os.getenv("ALERT_RSS_2", "")),
+    ("Google Alerts 3", os.getenv("ALERT_RSS_3", "")),
+    ("Google Alerts 4", os.getenv("ALERT_RSS_4", "")),
+    ("Google Alerts 5", os.getenv("ALERT_RSS_5", "")),
+]
+
+# ─── Utilitaires ──────────────────────────────────────────────────────────────
 
 def load_seen():
     if os.path.exists(SEEN_FILE):
@@ -75,17 +94,18 @@ def send_telegram(message):
 
 def test_telegram():
     now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    sources_actives = len(INDEED_RSS) + len(EXTRA_RSS) + sum(1 for _, u in GOOGLE_ALERTS_RSS if u)
     msg = (
         f"✅ <b>Oscar Scanner — Démarrage</b>\n\n"
-        f"Le scanner est actif et tourne correctement.\n"
-        f"🕐 {now}\n\n"
-        f"📡 Sources configurées : {sum(1 for u in GOOGLE_ALERTS_RSS if u)} Google Alerts\n"
-        f"🔍 Mots-clés actifs : {len(KEYWORDS)}\n\n"
+        f"🕐 {now}\n"
+        f"📡 {sources_actives} sources actives\n"
+        f"🔍 {len(KEYWORDS)} mots-clés surveillés\n\n"
+        f"Sources : Indeed FR, Freelance-Informatique, Google Alerts\n\n"
         f"Tu recevras une notif dès qu'une opportunité est détectée."
     )
     ok = send_telegram(msg)
     if ok:
-        print("✅ Telegram OK — message de confirmation envoyé")
+        print("✅ Telegram OK")
     else:
         print("❌ Telegram KO — vérifie TELEGRAM_TOKEN et TELEGRAM_CHAT_ID")
     return ok
@@ -93,7 +113,7 @@ def test_telegram():
 def format_message(entry, source_name):
     title = entry.get("title", "Sans titre")[:120]
     link = entry.get("link", "")
-    summary = entry.get("summary", "")[:250].replace("<b>", "").replace("</b>", "").replace("<br>", " ")
+    summary = entry.get("summary", "")[:300].replace("<b>", "").replace("</b>", "").replace("<br>", " ")
     date = entry.get("published", datetime.now().strftime("%d/%m/%Y"))
     return (
         f"🎯 <b>Nouvelle opportunité</b>\n"
@@ -104,32 +124,33 @@ def format_message(entry, source_name):
         f"🕐 {date}"
     )
 
-def scan_feed(url, source_name, seen):
+def scan_feed(name, url, seen):
     if not url:
         return 0
     found = 0
     try:
         feed = feedparser.parse(url)
         entries = feed.entries
-        print(f"   → {source_name} : {len(entries)} entrée(s) trouvée(s)")
+        print(f"   → {name} : {len(entries)} entrée(s)")
         for entry in entries:
             pid = post_id(entry)
             if pid in seen:
                 continue
             text = f"{entry.get('title', '')} {entry.get('summary', '')}"
             if matches(text):
-                msg = format_message(entry, source_name)
+                msg = format_message(entry, name)
                 send_telegram(msg)
                 found += 1
             seen.add(pid)
     except Exception as e:
-        print(f"   ❌ Erreur sur {source_name} : {e}")
+        print(f"   ❌ Erreur {name} : {e}")
     return found
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     print(f"\n🔍 Scan démarré — {datetime.now().strftime('%d/%m/%Y %H:%M')}")
 
-    # Test Telegram au démarrage
     telegram_ok = test_telegram()
     if not telegram_ok:
         print("⚠️  Arrêt — Telegram non fonctionnel")
@@ -138,21 +159,17 @@ if __name__ == "__main__":
     seen = load_seen()
     total = 0
 
-    alerts = [
-        ("cherche développeur web", os.getenv("ALERT_RSS_1", "")),
-        ("besoin site web freelance", os.getenv("ALERT_RSS_2", "")),
-        ("mission dev Afrique", os.getenv("ALERT_RSS_3", "")),
-        ("next.js react freelance", os.getenv("ALERT_RSS_4", "")),
-        ("développeur Cotonou Bénin", os.getenv("ALERT_RSS_5", "")),
-    ]
+    print(f"\n📡 Indeed RSS...")
+    for name, url in INDEED_RSS:
+        total += scan_feed(name, url, seen)
 
-    print(f"\n📡 Scan des Google Alerts...")
-    for name, url in alerts:
-        total += scan_feed(url, f"Google Alerts — {name}", seen)
+    print(f"\n📡 Sources freelance...")
+    for name, url in EXTRA_RSS:
+        total += scan_feed(name, url, seen)
 
-    print(f"\n📡 Scan des sources extra...")
-    for url in EXTRA_RSS:
-        total += scan_feed(url, url.split("/")[2], seen)
+    print(f"\n📡 Google Alerts...")
+    for name, url in GOOGLE_ALERTS_RSS:
+        total += scan_feed(name, url, seen)
 
     save_seen(seen)
     print(f"\n✅ Scan terminé — {total} nouvelle(s) opportunité(s) envoyée(s)")
