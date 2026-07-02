@@ -15,33 +15,35 @@ SEEN_FILE = "seen_posts.json"
 
 
 # ─────────────────────────────
-# 🎯 2 TYPES DE PROSPECTS UNIQUEMENT
+# 🎯 INTENTIONS RÉELLES (PAS DE BRUIT)
 # ─────────────────────────────
 
-BUSINESS_SIGNALS = [
-    "ouverture", "ouvre", "opening", "nouveau restaurant",
-    "nouvelle boutique", "lancement", "startup",
-    "restaurant", "café", "bar", "salon", "boutique"
+CLIENT_INTENTS = [
+    "cherche développeur",
+    "recherche développeur",
+    "need a developer",
+    "looking for developer",
+    "hire developer",
+    "freelance developer",
+    "web developer needed",
+    "need a website",
+    "create website",
+    "build website",
+    "besoin site web",
+    "créer site web",
+    "développeur urgent",
+    "react developer",
+    "next.js developer"
 ]
 
-CLIENT_SIGNALS = [
-    "cherche développeur", "besoin développeur", "hire developer",
-    "looking for developer", "freelance developer",
-    "besoin site web", "créer site web", "web developer",
-    "react developer", "next.js", "frontend developer",
-    "freelance", "developer needed", "need a website"
-]
-
 
 # ─────────────────────────────
-# 📡 SOURCES PROPRES (PAS DE BRUIT AFRIQUE NEWS)
+# 📡 SOURCES (RESTREINTES)
 # ─────────────────────────────
 
-GOOGLE_NEWS_RSS = [
-    ("Bénin business", "https://news.google.com/rss/search?q=ouverture+restaurant+B%C3%A9nin&hl=fr&gl=FR&ceid=FR:fr"),
-    ("CI business", "https://news.google.com/rss/search?q=nouveau+restaurant+Abidjan&hl=fr&gl=FR&ceid=FR:fr"),
-    ("Dev request", "https://news.google.com/rss/search?q=cherche+developpeur+site+web&hl=fr&gl=FR&ceid=FR:fr"),
-    ("Freelance demand", "https://news.google.com/rss/search?q=need+website+developer+freelance&hl=fr&gl=FR&ceid=FR:fr"),
+RSS_SOURCES = [
+    ("Google Dev FR", "https://news.google.com/rss/search?q=cherche+developpeur+site+web&hl=fr&gl=FR&ceid=FR:fr"),
+    ("Google Freelance", "https://news.google.com/rss/search?q=need+website+developer+freelance&hl=en&gl=US&ceid=US:en"),
 ]
 
 
@@ -65,14 +67,9 @@ def post_id(entry):
     ).hexdigest()
 
 
-def is_business(text):
+def is_client_intent(text):
     t = text.lower()
-    return any(k in t for k in BUSINESS_SIGNALS)
-
-
-def is_client_request(text):
-    t = text.lower()
-    return any(k in t for k in CLIENT_SIGNALS)
+    return any(k in t for k in CLIENT_INTENTS)
 
 
 # ─────────────────────────────
@@ -96,13 +93,27 @@ def send(msg):
 
 
 # ─────────────────────────────
-# 🚀 SCAN LOGIC
+# 🧾 FORMAT PROSPECT
+# ─────────────────────────────
+
+def build_message(title, link, source):
+    return (
+        f"🔥 <b>LEAD DÉTECTÉ</b>\n\n"
+        f"📌 {title}\n\n"
+        f"💡 Besoin détecté : site web / développeur\n\n"
+        f"🔗 {link}\n"
+        f"📡 {source}\n\n"
+        f"👉 Action : proposer site vitrine simple + rapide"
+    )
+
+
+# ─────────────────────────────
+# 🚀 SCAN
 # ─────────────────────────────
 
 def scan(name, url, seen):
     feed = feedparser.parse(url)
-
-    print(f"→ {name} : {len(feed.entries)} entries")
+    print(f"→ {name} : {len(feed.entries)} posts")
 
     found = 0
 
@@ -111,30 +122,15 @@ def scan(name, url, seen):
         if pid in seen:
             continue
 
-        text = f"{e.get('title','')} {e.get('summary','')}"
-
         title = e.get("title", "")
+        summary = e.get("summary", "")
         link = e.get("link", "")
 
-        # 🟢 TYPE 1 : BUSINESS LOCAL
-        if is_business(text):
-            send(
-                f"🏪 <b>Business détecté</b>\n\n"
-                f"📌 {title}\n"
-                f"🔗 {link}\n"
-                f"📡 {name}"
-            )
-            found += 1
+        text = f"{title} {summary}"
 
-        # 🔵 TYPE 2 : CLIENT DIRECT (plus important)
-        elif is_client_request(text):
-            send(
-                f"🔥 <b>Client potentiel (DEV)</b>\n\n"
-                f"📌 {title}\n"
-                f"🔗 {link}\n"
-                f"💡 besoin détecté\n"
-                f"📡 {name}"
-            )
+        if is_client_intent(text):
+            msg = build_message(title, link, name)
+            send(msg)
             found += 1
 
         seen.add(pid)
@@ -143,25 +139,25 @@ def scan(name, url, seen):
 
 
 # ─────────────────────────────
-# 🧾 MAIN
+# 🚀 MAIN
 # ─────────────────────────────
 
 if __name__ == "__main__":
     print("\n🔍 Scanner lancé", datetime.now())
 
-    send("🚀 Scanner lancé\nRecherche de prospects actifs...")
+    send("🚀 Scanner lancé\nRecherche de vrais clients en cours...")
 
     seen = load_seen()
     total = 0
 
-    for name, url in GOOGLE_NEWS_RSS:
+    for name, url in RSS_SOURCES:
         total += scan(name, url, seen)
 
     save_seen(seen)
 
     if total == 0:
-        send("⚠️ Aucun prospect détecté aujourd’hui")
+        send("⚠️ Aucun client détecté aujourd’hui")
     else:
-        send(f"✅ Scan terminé\n🎯 {total} prospects trouvés")
+        send(f"✅ Terminé\n🎯 {total} leads détectés")
 
     print("Terminé:", total)
