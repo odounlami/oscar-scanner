@@ -15,35 +15,38 @@ SEEN_FILE = "seen_posts.json"
 
 
 # ─────────────────────────────
-# 🎯 INTENTIONS RÉELLES (PAS DE BRUIT)
+# 🎯 INTENTIONS RÉELLES CLIENTS
 # ─────────────────────────────
 
-CLIENT_INTENTS = [
-    "cherche développeur",
-    "recherche développeur",
-    "need a developer",
-    "looking for developer",
-    "hire developer",
-    "freelance developer",
-    "web developer needed",
-    "need a website",
-    "create website",
-    "build website",
-    "besoin site web",
-    "créer site web",
-    "développeur urgent",
-    "react developer",
-    "next.js developer"
+INTENT_PATTERNS = [
+    "looking for", "we are looking", "need", "hire", "hiring",
+    "seeking", "freelancer needed", "require", "wanted",
+    "cherche", "recherche", "besoin", "recrute",
+    "need a developer", "need a website", "build a website",
+    "web developer", "freelance developer", "create website"
 ]
 
 
 # ─────────────────────────────
-# 📡 SOURCES (RESTREINTES)
+# 🚫 BRUIT (ARTICLES / CONTENU ÉDUCATIF)
+# ─────────────────────────────
+
+NOISE_PATTERNS = [
+    "top", "skills", "how to", "guide", "tutorial",
+    "learn", "become", "roadmap", "tips",
+    "trends", "future", "career", "market",
+    "analysis", "report", "study"
+]
+
+
+# ─────────────────────────────
+# 📡 SOURCES (RESTREINTES ET PROPRES)
 # ─────────────────────────────
 
 RSS_SOURCES = [
-    ("Google Dev FR", "https://news.google.com/rss/search?q=cherche+developpeur+site+web&hl=fr&gl=FR&ceid=FR:fr"),
-    ("Google Freelance", "https://news.google.com/rss/search?q=need+website+developer+freelance&hl=en&gl=US&ceid=US:en"),
+    ("Google Dev Intent", "https://news.google.com/rss/search?q=looking+for+developer+website&hl=en&gl=US&ceid=US:en"),
+    ("Google Hire Dev", "https://news.google.com/rss/search?q=hire+freelance+developer+website&hl=en&gl=US&ceid=US:en"),
+    ("Google FR Intent", "https://news.google.com/rss/search?q=besoin+site+web+developpeur&hl=fr&gl=FR&ceid=FR:fr"),
 ]
 
 
@@ -67,9 +70,23 @@ def post_id(entry):
     ).hexdigest()
 
 
-def is_client_intent(text):
+def is_noise(text):
     t = text.lower()
-    return any(k in t for k in CLIENT_INTENTS)
+    return any(n in t for n in NOISE_PATTERNS)
+
+
+def is_intent(text):
+    t = text.lower()
+    return any(p in t for p in INTENT_PATTERNS)
+
+
+def is_valid_lead(text):
+    """
+    Règle stricte :
+    - doit contenir une intention
+    - ne doit pas être un article éducatif
+    """
+    return is_intent(text) and not is_noise(text)
 
 
 # ─────────────────────────────
@@ -78,7 +95,7 @@ def is_client_intent(text):
 
 def send(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram not configured")
+        print("Telegram non configuré")
         return
 
     requests.post(
@@ -92,15 +109,11 @@ def send(msg):
     )
 
 
-# ─────────────────────────────
-# 🧾 FORMAT PROSPECT
-# ─────────────────────────────
-
-def build_message(title, link, source):
+def format_lead(title, link, source):
     return (
-        f"🔥 <b>LEAD DÉTECTÉ</b>\n\n"
+        f"🔥 <b>LEAD QUALIFIÉ</b>\n\n"
         f"📌 {title}\n\n"
-        f"💡 Besoin détecté : site web / développeur\n\n"
+        f"💡 Intention détectée : besoin de développeur / site web\n\n"
         f"🔗 {link}\n"
         f"📡 {source}\n\n"
         f"👉 Action : proposer site vitrine simple + rapide"
@@ -113,7 +126,7 @@ def build_message(title, link, source):
 
 def scan(name, url, seen):
     feed = feedparser.parse(url)
-    print(f"→ {name} : {len(feed.entries)} posts")
+    print(f"→ {name} : {len(feed.entries)} entries")
 
     found = 0
 
@@ -128,9 +141,8 @@ def scan(name, url, seen):
 
         text = f"{title} {summary}"
 
-        if is_client_intent(text):
-            msg = build_message(title, link, name)
-            send(msg)
+        if is_valid_lead(text):
+            send(format_lead(title, link, name))
             found += 1
 
         seen.add(pid)
@@ -139,13 +151,13 @@ def scan(name, url, seen):
 
 
 # ─────────────────────────────
-# 🚀 MAIN
+# 🧾 MAIN
 # ─────────────────────────────
 
 if __name__ == "__main__":
     print("\n🔍 Scanner lancé", datetime.now())
 
-    send("🚀 Scanner lancé\nRecherche de vrais clients en cours...")
+    send("🚀 Scanner lancé\nRecherche de leads qualifiés...")
 
     seen = load_seen()
     total = 0
@@ -156,8 +168,8 @@ if __name__ == "__main__":
     save_seen(seen)
 
     if total == 0:
-        send("⚠️ Aucun client détecté aujourd’hui")
+        send("⚠️ Aucun lead qualifié détecté aujourd’hui")
     else:
-        send(f"✅ Terminé\n🎯 {total} leads détectés")
+        send(f"✅ Terminé\n🎯 {total} leads qualifiés")
 
     print("Terminé:", total)
