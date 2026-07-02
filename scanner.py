@@ -15,62 +15,41 @@ SEEN_FILE = "seen_posts.json"
 
 
 # ─────────────────────────────
-# MOTS-CLÉS PROSPECTION
+# 🎯 SIGNAUX BUSINESS LOCAUX
 # ─────────────────────────────
 
-BUSINESS_OPENING = [
-    "ouvre", "ouverture", "opening", "grand opening", "inauguration",
-    "nouveau restaurant", "nouvelle boutique", "nouveau magasin",
-    "nouveau salon", "nouveau café", "lancement", "startup"
-]
-
-SERVICE_REQUEST = [
-    "cherche graphiste", "logo", "community manager",
-    "marketing", "communication", "branding"
-]
-
-RECRUITMENT = [
-    "recrute", "recrutement", "hiring", "cherche", "emploi"
-]
-
-LOCAL_BUSINESS = [
-    "restaurant", "maquis", "café", "bar", "snack",
-    "salon", "spa", "coiffure", "pharmacie", "clinique",
-    "agence immobilière", "boutique"
-]
-
-ALL_KEYWORDS = BUSINESS_OPENING + SERVICE_REQUEST + RECRUITMENT + LOCAL_BUSINESS
-
-
-# ─────────────────────────────
-# SOURCES
-# ─────────────────────────────
-
-INDEED_RSS = [
-    ("Indeed dev", "https://fr.indeed.com/rss?q=d%C3%A9veloppeur+web&sort=date"),
-    ("Indeed freelance", "https://fr.indeed.com/rss?q=freelance+react&sort=date"),
-]
-
-EXTRA_RSS = [
-    ("Freelance Info", "https://www.freelance-informatique.fr/rss.php?type=mission"),
-    ("Journal CM", "https://www.journalducm.com/feed/")
+SIGNALS = [
+    "ouverture", "ouvre", "nouveau", "opening", "lancement",
+    "restaurant", "café", "bar", "snack", "maquis",
+    "salon", "coiffure", "spa", "boutique",
+    "entreprise", "startup", "agence",
+    "recrute", "recrutement", "cherche"
 ]
 
 
 # ─────────────────────────────
-# UTILS
+# 📡 SOURCES
+# ─────────────────────────────
+
+GOOGLE_NEWS_RSS = [
+    ("Bénin business", "https://news.google.com/rss/search?q=ouverture+restaurant+B%C3%A9nin&hl=fr&gl=FR&ceid=FR:fr"),
+    ("Côte d'Ivoire business", "https://news.google.com/rss/search?q=nouveau+restaurant+Abidjan&hl=fr&gl=FR&ceid=FR:fr"),
+    ("Business Afrique", "https://news.google.com/rss/search?q=nouvelle+entreprise+Afrique+de+l%27Ouest&hl=fr&gl=FR&ceid=FR:fr"),
+]
+
+
+# ─────────────────────────────
+# 🧠 UTILS
 # ─────────────────────────────
 
 def load_seen():
     if os.path.exists(SEEN_FILE):
-        with open(SEEN_FILE, "r") as f:
-            return set(json.load(f))
+        return set(json.load(open(SEEN_FILE)))
     return set()
 
 
 def save_seen(seen):
-    with open(SEEN_FILE, "w") as f:
-        json.dump(list(seen), f)
+    json.dump(list(seen), open(SEEN_FILE, "w"))
 
 
 def post_id(entry):
@@ -79,151 +58,81 @@ def post_id(entry):
     ).hexdigest()
 
 
-def clean_text(entry):
-    return f"{entry.get('title','')} {entry.get('summary','')} {entry.get('description','')}".lower()
+def is_business_signal(text):
+    t = text.lower()
+    return any(s in t for s in SIGNALS)
 
 
 # ─────────────────────────────
-# SCORE SYSTEM
+# 📲 TELEGRAM
 # ─────────────────────────────
 
-def score(text):
-    s = 0
-    reasons = []
-
-    def check(words, points, label):
-        nonlocal s
-        if any(w in text for w in words):
-            s += points
-            reasons.append(f"+{points} {label}")
-
-    check(BUSINESS_OPENING, 10, "Business opening")
-    check(SERVICE_REQUEST, 10, "Service request")
-    check(RECRUITMENT, 6, "Recruitment")
-    check(LOCAL_BUSINESS, 5, "Local business")
-
-    return s, reasons
-
-
-# ─────────────────────────────
-# TELEGRAM
-# ─────────────────────────────
-
-def send_telegram(message):
+def send(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ Telegram non configuré")
-        return False
+        print("Telegram non configuré")
+        return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-    payload = {
+    requests.post(url, json={
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": False,
-    }
-
-    try:
-        requests.post(url, json=payload, timeout=10).raise_for_status()
-        return True
-    except Exception as e:
-        print(f"❌ Telegram error: {e}")
-        return False
+        "text": msg,
+        "parse_mode": "HTML"
+    })
 
 
 # ─────────────────────────────
-# MESSAGES
+# 🚀 SCAN
 # ─────────────────────────────
 
-def send_start_message():
-    now = datetime.now().strftime("%d/%m/%Y %H:%M")
-    send_telegram(
-        f"🚀 <b>Scanner lancé</b>\n\n🕐 {now}\n📡 Scan en cours..."
-    )
-
-
-def send_end_message(total):
-    if total > 0:
-        msg = f"✅ <b>Scan terminé</b>\n\n🎯 {total} prospect(s) trouvé(s)"
-    else:
-        msg = (
-            "⚠️ <b>Scan terminé</b>\n\n"
-            "Aucun prospect trouvé aujourd’hui.\n"
-            "Le système fonctionne, mais rien de pertinent détecté."
-        )
-
-    send_telegram(msg)
-
-
-# ─────────────────────────────
-# SCAN
-# ─────────────────────────────
-
-def scan_feed(name, url, seen, min_score=6):
-    if not url:
-        return 0
+def scan(name, url, seen):
+    feed = feedparser.parse(url)
+    print(f"→ {name} : {len(feed.entries)} posts")
 
     found = 0
 
-    try:
-        feed = feedparser.parse(url)
-        print(f"→ {name} : {len(feed.entries)} entrées")
+    for e in feed.entries:
+        pid = post_id(e)
+        if pid in seen:
+            continue
 
-        for entry in feed.entries:
-            pid = post_id(entry)
-            if pid in seen:
-                continue
+        text = f"{e.get('title','')} {e.get('summary','')}"
 
-            text = clean_text(entry)
-            s, reasons = score(text)
+        if is_business_signal(text):
+            msg = (
+                f"🎯 <b>Prospect détecté</b>\n\n"
+                f"📌 {e.get('title','')}\n\n"
+                f"🔗 {e.get('link','')}\n"
+                f"📡 {name}"
+            )
+            send(msg)
+            found += 1
 
-            # DEBUG IMPORTANT
-            print(f"\n[{name}] {entry.get('title','')[:60]}")
-            print(f"SCORE: {s} | {reasons}")
-
-            if s >= min_score:
-                msg = (
-                    f"🎯 <b>Prospect détecté</b>\n\n"
-                    f"📌 {entry.get('title','')}\n\n"
-                    f"⭐ Score: {s}\n"
-                    f"{chr(10).join(reasons)}\n\n"
-                    f"🔗 <a href='{entry.get('link','')}'>Voir</a>\n"
-                    f"📡 {name}"
-                )
-
-                send_telegram(msg)
-                found += 1
-
-            seen.add(pid)
-
-    except Exception as e:
-        print(f"❌ Erreur {name}: {e}")
+        seen.add(pid)
 
     return found
 
 
 # ─────────────────────────────
-# MAIN
+# 🧾 MAIN
 # ─────────────────────────────
 
 if __name__ == "__main__":
-    print(f"\n🔍 Scan démarré — {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    print("\n🔍 Scanner lancé", datetime.now())
 
-    send_start_message()
+    send("🚀 Scanner lancé\nRecherche de prospects en cours...")
 
     seen = load_seen()
     total = 0
 
-    print("\n📡 Indeed...")
-    for name, url in INDEED_RSS:
-        total += scan_feed(name, url, seen)
-
-    print("\n📡 Extra sources...")
-    for name, url in EXTRA_RSS:
-        total += scan_feed(name, url, seen)
+    for name, url in GOOGLE_NEWS_RSS:
+        total += scan(name, url, seen)
 
     save_seen(seen)
 
-    send_end_message(total)
+    if total == 0:
+        send("⚠️ Scan terminé\nAucun prospect détecté aujourd’hui.")
+    else:
+        send(f"✅ Scan terminé\n🎯 {total} prospect(s) trouvé(s)")
 
-    print(f"\n✅ Terminé — {total} prospect(s)")
+    print("Terminé:", total)
