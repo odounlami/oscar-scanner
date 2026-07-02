@@ -15,26 +15,33 @@ SEEN_FILE = "seen_posts.json"
 
 
 # ─────────────────────────────
-# 🎯 SIGNAUX BUSINESS LOCAUX
+# 🎯 2 TYPES DE PROSPECTS UNIQUEMENT
 # ─────────────────────────────
 
-SIGNALS = [
-    "ouverture", "ouvre", "nouveau", "opening", "lancement",
-    "restaurant", "café", "bar", "snack", "maquis",
-    "salon", "coiffure", "spa", "boutique",
-    "entreprise", "startup", "agence",
-    "recrute", "recrutement", "cherche"
+BUSINESS_SIGNALS = [
+    "ouverture", "ouvre", "opening", "nouveau restaurant",
+    "nouvelle boutique", "lancement", "startup",
+    "restaurant", "café", "bar", "salon", "boutique"
+]
+
+CLIENT_SIGNALS = [
+    "cherche développeur", "besoin développeur", "hire developer",
+    "looking for developer", "freelance developer",
+    "besoin site web", "créer site web", "web developer",
+    "react developer", "next.js", "frontend developer",
+    "freelance", "developer needed", "need a website"
 ]
 
 
 # ─────────────────────────────
-# 📡 SOURCES
+# 📡 SOURCES PROPRES (PAS DE BRUIT AFRIQUE NEWS)
 # ─────────────────────────────
 
 GOOGLE_NEWS_RSS = [
     ("Bénin business", "https://news.google.com/rss/search?q=ouverture+restaurant+B%C3%A9nin&hl=fr&gl=FR&ceid=FR:fr"),
-    ("Côte d'Ivoire business", "https://news.google.com/rss/search?q=nouveau+restaurant+Abidjan&hl=fr&gl=FR&ceid=FR:fr"),
-    ("Business Afrique", "https://news.google.com/rss/search?q=nouvelle+entreprise+Afrique+de+l%27Ouest&hl=fr&gl=FR&ceid=FR:fr"),
+    ("CI business", "https://news.google.com/rss/search?q=nouveau+restaurant+Abidjan&hl=fr&gl=FR&ceid=FR:fr"),
+    ("Dev request", "https://news.google.com/rss/search?q=cherche+developpeur+site+web&hl=fr&gl=FR&ceid=FR:fr"),
+    ("Freelance demand", "https://news.google.com/rss/search?q=need+website+developer+freelance&hl=fr&gl=FR&ceid=FR:fr"),
 ]
 
 
@@ -58,9 +65,14 @@ def post_id(entry):
     ).hexdigest()
 
 
-def is_business_signal(text):
+def is_business(text):
     t = text.lower()
-    return any(s in t for s in SIGNALS)
+    return any(k in t for k in BUSINESS_SIGNALS)
+
+
+def is_client_request(text):
+    t = text.lower()
+    return any(k in t for k in CLIENT_SIGNALS)
 
 
 # ─────────────────────────────
@@ -69,25 +81,28 @@ def is_business_signal(text):
 
 def send(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram non configuré")
+        print("Telegram not configured")
         return
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-
-    requests.post(url, json={
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": msg,
-        "parse_mode": "HTML"
-    })
+    requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": msg,
+            "parse_mode": "HTML"
+        },
+        timeout=10
+    )
 
 
 # ─────────────────────────────
-# 🚀 SCAN
+# 🚀 SCAN LOGIC
 # ─────────────────────────────
 
 def scan(name, url, seen):
     feed = feedparser.parse(url)
-    print(f"→ {name} : {len(feed.entries)} posts")
+
+    print(f"→ {name} : {len(feed.entries)} entries")
 
     found = 0
 
@@ -98,14 +113,28 @@ def scan(name, url, seen):
 
         text = f"{e.get('title','')} {e.get('summary','')}"
 
-        if is_business_signal(text):
-            msg = (
-                f"🎯 <b>Prospect détecté</b>\n\n"
-                f"📌 {e.get('title','')}\n\n"
-                f"🔗 {e.get('link','')}\n"
+        title = e.get("title", "")
+        link = e.get("link", "")
+
+        # 🟢 TYPE 1 : BUSINESS LOCAL
+        if is_business(text):
+            send(
+                f"🏪 <b>Business détecté</b>\n\n"
+                f"📌 {title}\n"
+                f"🔗 {link}\n"
                 f"📡 {name}"
             )
-            send(msg)
+            found += 1
+
+        # 🔵 TYPE 2 : CLIENT DIRECT (plus important)
+        elif is_client_request(text):
+            send(
+                f"🔥 <b>Client potentiel (DEV)</b>\n\n"
+                f"📌 {title}\n"
+                f"🔗 {link}\n"
+                f"💡 besoin détecté\n"
+                f"📡 {name}"
+            )
             found += 1
 
         seen.add(pid)
@@ -120,7 +149,7 @@ def scan(name, url, seen):
 if __name__ == "__main__":
     print("\n🔍 Scanner lancé", datetime.now())
 
-    send("🚀 Scanner lancé\nRecherche de prospects en cours...")
+    send("🚀 Scanner lancé\nRecherche de prospects actifs...")
 
     seen = load_seen()
     total = 0
@@ -131,8 +160,8 @@ if __name__ == "__main__":
     save_seen(seen)
 
     if total == 0:
-        send("⚠️ Scan terminé\nAucun prospect détecté aujourd’hui.")
+        send("⚠️ Aucun prospect détecté aujourd’hui")
     else:
-        send(f"✅ Scan terminé\n🎯 {total} prospect(s) trouvé(s)")
+        send(f"✅ Scan terminé\n🎯 {total} prospects trouvés")
 
     print("Terminé:", total)
