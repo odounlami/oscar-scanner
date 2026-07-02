@@ -13,41 +13,37 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 SEEN_FILE = "seen_posts.json"
 
+
 # ─────────────────────────────
-# 1. MOTS-CLÉS PROSPECTION
+# MOTS-CLÉS PROSPECTION
 # ─────────────────────────────
 
 BUSINESS_OPENING = [
     "ouvre", "ouverture", "opening", "grand opening", "inauguration",
     "nouveau restaurant", "nouvelle boutique", "nouveau magasin",
-    "nouveau salon", "nouveau café", "nouveau bar",
-    "lancement", "startup", "nouvelle entreprise", "nouvelle société"
+    "nouveau salon", "nouveau café", "lancement", "startup"
 ]
 
 SERVICE_REQUEST = [
     "cherche graphiste", "logo", "community manager",
-    "marketing", "communication", "branding", "réseaux sociaux"
+    "marketing", "communication", "branding"
 ]
 
 RECRUITMENT = [
-    "recrute", "recrutement", "hiring", "cherche serveur",
-    "cherche cuisinier", "cherche manager", "job",
-    "emploi", "staff", "embauche"
+    "recrute", "recrutement", "hiring", "cherche", "emploi"
 ]
 
 LOCAL_BUSINESS = [
-    "restaurant", "maquis", "fast-food", "snack", "bar",
-    "café", "pizzeria", "boulangerie",
-    "salon", "coiffure", "spa", "onglerie",
-    "clinique", "pharmacie", "cabinet",
-    "agence immobilière", "immobilier"
+    "restaurant", "maquis", "café", "bar", "snack",
+    "salon", "spa", "coiffure", "pharmacie", "clinique",
+    "agence immobilière", "boutique"
 ]
 
 ALL_KEYWORDS = BUSINESS_OPENING + SERVICE_REQUEST + RECRUITMENT + LOCAL_BUSINESS
 
 
 # ─────────────────────────────
-# 2. SOURCES RSS
+# SOURCES
 # ─────────────────────────────
 
 INDEED_RSS = [
@@ -62,7 +58,7 @@ EXTRA_RSS = [
 
 
 # ─────────────────────────────
-# 3. UTILITAIRES
+# UTILS
 # ─────────────────────────────
 
 def load_seen():
@@ -84,12 +80,11 @@ def post_id(entry):
 
 
 def clean_text(entry):
-    text = f"{entry.get('title', '')} {entry.get('summary', '')} {entry.get('description', '')}"
-    return text.lower()
+    return f"{entry.get('title','')} {entry.get('summary','')} {entry.get('description','')}".lower()
 
 
 # ─────────────────────────────
-# 4. SCORING (CŒUR DU SYSTEME)
+# SCORE SYSTEM
 # ─────────────────────────────
 
 def score(text):
@@ -103,15 +98,15 @@ def score(text):
             reasons.append(f"+{points} {label}")
 
     check(BUSINESS_OPENING, 10, "Business opening")
-    check(SERVICE_REQUEST, 12, "Service demandé")
-    check(RECRUITMENT, 8, "Recrutement")
-    check(LOCAL_BUSINESS, 6, "Commerce local")
+    check(SERVICE_REQUEST, 10, "Service request")
+    check(RECRUITMENT, 6, "Recruitment")
+    check(LOCAL_BUSINESS, 5, "Local business")
 
     return s, reasons
 
 
 # ─────────────────────────────
-# 5. TELEGRAM
+# TELEGRAM
 # ─────────────────────────────
 
 def send_telegram(message):
@@ -129,35 +124,42 @@ def send_telegram(message):
     }
 
     try:
-        r = requests.post(url, json=payload, timeout=10)
-        r.raise_for_status()
+        requests.post(url, json=payload, timeout=10).raise_for_status()
         return True
     except Exception as e:
         print(f"❌ Telegram error: {e}")
         return False
 
 
-def format_message(entry, source, score_value, reasons):
-    title = entry.get("title", "Sans titre")[:120]
-    link = entry.get("link", "")
-    date = entry.get("published", datetime.now().strftime("%d/%m/%Y"))
+# ─────────────────────────────
+# MESSAGES
+# ─────────────────────────────
 
-    return (
-        f"🎯 <b>Prospect détecté</b>\n\n"
-        f"📌 <b>{title}</b>\n\n"
-        f"⭐ Score: {score_value}/30\n"
-        f"{chr(10).join(reasons)}\n\n"
-        f"🔗 <a href='{link}'>Voir source</a>\n"
-        f"📡 {source}\n"
-        f"🕐 {date}"
+def send_start_message():
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    send_telegram(
+        f"🚀 <b>Scanner lancé</b>\n\n🕐 {now}\n📡 Scan en cours..."
     )
 
 
+def send_end_message(total):
+    if total > 0:
+        msg = f"✅ <b>Scan terminé</b>\n\n🎯 {total} prospect(s) trouvé(s)"
+    else:
+        msg = (
+            "⚠️ <b>Scan terminé</b>\n\n"
+            "Aucun prospect trouvé aujourd’hui.\n"
+            "Le système fonctionne, mais rien de pertinent détecté."
+        )
+
+    send_telegram(msg)
+
+
 # ─────────────────────────────
-# 6. SCAN RSS
+# SCAN
 # ─────────────────────────────
 
-def scan_feed(name, url, seen, min_score=12):
+def scan_feed(name, url, seen, min_score=6):
     if not url:
         return 0
 
@@ -175,8 +177,20 @@ def scan_feed(name, url, seen, min_score=12):
             text = clean_text(entry)
             s, reasons = score(text)
 
+            # DEBUG IMPORTANT
+            print(f"\n[{name}] {entry.get('title','')[:60]}")
+            print(f"SCORE: {s} | {reasons}")
+
             if s >= min_score:
-                msg = format_message(entry, name, s, reasons)
+                msg = (
+                    f"🎯 <b>Prospect détecté</b>\n\n"
+                    f"📌 {entry.get('title','')}\n\n"
+                    f"⭐ Score: {s}\n"
+                    f"{chr(10).join(reasons)}\n\n"
+                    f"🔗 <a href='{entry.get('link','')}'>Voir</a>\n"
+                    f"📡 {name}"
+                )
+
                 send_telegram(msg)
                 found += 1
 
@@ -189,11 +203,13 @@ def scan_feed(name, url, seen, min_score=12):
 
 
 # ─────────────────────────────
-# 7. MAIN
+# MAIN
 # ─────────────────────────────
 
 if __name__ == "__main__":
     print(f"\n🔍 Scan démarré — {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+
+    send_start_message()
 
     seen = load_seen()
     total = 0
@@ -208,4 +224,6 @@ if __name__ == "__main__":
 
     save_seen(seen)
 
-    print(f"\n✅ Terminé — {total} prospects envoyés")
+    send_end_message(total)
+
+    print(f"\n✅ Terminé — {total} prospect(s)")
