@@ -3,7 +3,7 @@ import requests
 import json
 import os
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -12,36 +12,23 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 SEEN_FILE = "seen_posts.json"
-
-
-# ─────────────────────────────
-# 🎯 INTENTIONS RÉELLES CLIENTS
-# ─────────────────────────────
+MAX_AGE_DAYS = 14
 
 INTENT_PATTERNS = [
     "looking for", "we are looking", "need", "hire", "hiring",
     "seeking", "freelancer needed", "require", "wanted",
     "cherche", "recherche", "besoin", "recrute",
     "need a developer", "need a website", "build a website",
-    "web developer", "freelance developer", "create website"
+    "web developer", "freelance developer", "create website",
+    "développeur", "développeur web", "développeur logiciel",
+    "recrutement", "offre d'emploi", "emploi"
 ]
-
-
-# ─────────────────────────────
-# 🚫 BRUIT (ARTICLES / CONTENU ÉDUCATIF)
-# ─────────────────────────────
 
 NOISE_PATTERNS = [
     "top", "skills", "how to", "guide", "tutorial",
-    "learn", "become", "roadmap", "tips",
-    "trends", "future", "career", "market",
-    "analysis", "report", "study"
+    "learn", "become", "roadmap", "tips", "trends",
+    "future", "career", "market", "analysis", "report", "study"
 ]
-
-
-# ─────────────────────────────
-# 📡 SOURCES (RESTREINTES ET PROPRES)
-# ─────────────────────────────
 
 RSS_SOURCES = [
     ("Google Dev Intent", "https://news.google.com/rss/search?q=looking+for+developer+website&hl=en&gl=US&ceid=US:en"),
@@ -50,121 +37,114 @@ RSS_SOURCES = [
 ]
 
 
-# ─────────────────────────────
-# 🧠 UTILS
-# ─────────────────────────────
-
 def load_seen():
     if os.path.exists(SEEN_FILE):
-        return set(json.load(open(SEEN_FILE)))
+        with open(SEEN_FILE, encoding="utf-8") as f:
+            return set(json.load(f))
     return set()
 
 
 def save_seen(seen):
-    json.dump(list(seen), open(SEEN_FILE, "w"))
+    with open(SEEN_FILE, "w", encoding="utf-8") as f:
+        json.dump(sorted(seen), f, ensure_ascii=False, indent=2)
 
 
 def post_id(entry):
-    return hashlib.md5(
-        (entry.get("link", "") + entry.get("title", "")).encode()
+    return hashlib.sha256(
+        (entry.get("link", "") + entry.get("title", "")).encode("utf-8")
     ).hexdigest()
 
 
 def is_noise(text):
-    t = text.lower()
-    return any(n in t for n in NOISE_PATTERNS)
+    return any(n in text.lower() for n in NOISE_PATTERNS)
 
 
 def is_intent(text):
-    t = text.lower()
-    return any(p in t for p in INTENT_PATTERNS)
+    return any(p in text.lower() for p in INTENT_PATTERNS)
+
+
+def parse_date(entry):
+    parsed = entry.get("published_parsed") or entry.get("updated_parsed")
+    if not parsed:
+        return None
+    try:
+        return datetime(*parsed[:6], tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def age_in_days(entry):
+    published = parse_date(entry)
+    if published is None:
+        return None
+    return max(0, (datetime.now(timezone.utc) - published).days)
+
+
+def is_recent(entry):
+    age = age_in_days(entry)
+    return age is not None and age <= MAX_AGE_DAYS
 
 
 def is_valid_lead(text):
-    """
-    Règle stricte :
-    - doit contenir une intention
-    - ne doit pas être un article éducatif
-    """
     return is_intent(text) and not is_noise(text)
 
-
-# ─────────────────────────────
-# 📲 TELEGRAM
-# ─────────────────────────────
 
 def send(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram non configuré")
         return
-
     requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        json={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": msg,
-            "parse_mode": "HTML"
-        },
+        json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
         timeout=10
     )
 
 
-def format_lead(title, link, source):
+def format_lead(title, link, source, age):
+    date_label = f"il y a {age} jour(s)" if age is not None else "date inconnue"
     return (
         f"🔥 <b>LEAD QUALIFIÉ</b>\n\n"
         f"📌 {title}\n\n"
-        f"💡 Intention détectée : besoin de développeur / site web\n\n"
+        f"💡 Intention détectée : besoin de développeur / site web\n"
+        f"📅 Publiée {date_label}\n\n"
         f"🔗 {link}\n"
         f"📡 {source}\n\n"
         f"👉 Action : proposer site vitrine simple + rapide"
     )
 
 
-# ─────────────────────────────
-# 🚀 SCAN
-# ─────────────────────────────
-
 def scan(name, url, seen):
     feed = feedparser.parse(url)
     print(f"→ {name} : {len(feed.entries)} entries")
-
     found = 0
 
-    for e in feed.entries:
-        pid = post_id(e)
+    for entry in feed.entries:
+        pid = post_id(entry)
         if pid in seen:
             continue
-
-        title = e.get("title", "")
-        summary = e.get("summary", "")
-        link = e.get("link", "")
-
-        text = f"{title} {summary}"
-
-        if is_valid_lead(text):
-            send(format_lead(title, link, name))
-            found += 1
-
         seen.add(pid)
+
+        title = entry.get("title", "").strip()
+        summary = entry.get("summary", "")
+        link = entry.get("link", "")
+        text = f"{title} {summary}"
+        age = age_in_days(entry)
+
+        if not is_recent(entry):
+            continue
+        if is_valid_lead(text):
+            send(format_lead(title, link, name, age))
+            found += 1
 
     return found
 
 
-# ─────────────────────────────
-# 🧾 MAIN
-# ─────────────────────────────
-
 if __name__ == "__main__":
     print("\n🔍 Scanner lancé", datetime.now())
-
     send("🚀 Scanner lancé\nRecherche de leads qualifiés...")
 
     seen = load_seen()
-    total = 0
-
-    for name, url in RSS_SOURCES:
-        total += scan(name, url, seen)
-
+    total = sum(scan(name, url, seen) for name, url in RSS_SOURCES)
     save_seen(seen)
 
     if total == 0:
