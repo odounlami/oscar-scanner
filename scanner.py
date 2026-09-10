@@ -77,19 +77,41 @@ def node_value(node, selectors):
 
 def extract_jobbenin(soup, url):
     jobs = []
-    cards = soup.select("article, .job-card, .job-item, .offre, .offer, .card")
-    for card in cards:
-        link = card.select_one("a[href]")
-        title_node = card.select_one("h1, h2, h3, h4, .title, .job-title, .offer-title")
-        if not link or not title_node:
+    for card in soup.select(".job-bx"):
+        title_node = card.select_one(".job-contant h4 a")
+        if not title_node:
             continue
+
         title = clean(title_node.get_text(" "))
-        if len(title) < 8:
+        href = title_node.get("href")
+        if len(title) < 3 or not href:
             continue
-        href = urljoin(url, link.get("href"))
-        date_text = node_value(card, ["time", ".date", ".job-date", ".date-posted", "[class*=date]"])
-        published = parse_date(date_text or card.get_text(" "))
-        jobs.append({"title": title, "link": href, "source": "JobBenin", "ville": node_value(card, [".ville", ".city", "[class*=ville]", "[class*=city]"]), "diplome": node_value(card, [".diplome", ".education", "[class*=diplome]", "[class*=education]"]), "salaire": node_value(card, [".salaire", ".salary", "[class*=salaire]", "[class*=salary]"]), "published": published, "date_inconnue": published is None, "summary": clean(card.get_text(" "))[:1000]})
+
+        published = parse_date(node_value(card, [".job-day"]))
+        location = node_value(card, [".job-contant p:nth-of-type(1)"])
+        details = card.select_one(".job-contant p:nth-of-type(2)")
+        details_text = clean(details.get_text(" ") if details else "")
+        city = ""
+        diploma = ""
+        city_node = details.select_one(".fa-city") if details else None
+        diploma_node = details.select_one(".fa-user-graduate") if details else None
+        if city_node:
+            city = clean(city_node.parent.get_text(" "))
+        if diploma_node:
+            diploma = clean(diploma_node.parent.get_text(" "))
+        salary = node_value(card, [".jobs-amount .amount"])
+
+        jobs.append({
+            "title": title,
+            "link": urljoin(url, href),
+            "source": "JobBenin",
+            "ville": city or location,
+            "diplome": diploma,
+            "salaire": salary,
+            "published": published,
+            "date_inconnue": published is None,
+            "summary": clean(card.get_text(" "))[:1000],
+        })
     return jobs
 
 
