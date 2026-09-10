@@ -224,7 +224,45 @@ def post_id(job):
 def gemini_classify(job):
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY manquante")
-    prompt = f'''Classe cette annonce pour un développeur web/IT au Bénin. Réponds uniquement en JSON avec score (0 à 10), qualifie (true/false) et raison courte. Score >= 6 = qualifiée.\nTitre: {job["title"]}\nVille: {job.get("ville", "")}\nDiplôme: {job.get("diplome", "")}\nSalaire: {job.get("salaire", "")}\nDate de publication: {job["published"].strftime("%d/%m/%Y") if job.get("published") else ""}\nDate limite: {job["date_limite"].strftime("%d/%m/%Y") if job.get("date_limite") else ""}\nDétails de l'annonce: {job.get("summary", "")}'''
+    prompt = f'''Tu es un recruteur spécialisé dans les profils développeur web/IT au Bénin.
+
+Analyse réellement cette annonce avant de lui attribuer un score. Ne te contente pas de repérer des mots-clés.
+Évalue notamment :
+1. adéquation du métier et des missions avec un profil développeur web/IT ;
+2. adéquation des technologies et compétences demandées (notamment Angular, React, Laravel, API/REST, JavaScript, front-end/back-end) ;
+3. niveau d'expérience demandé par rapport à un profil junior/intermédiaire ;
+4. localisation et contexte au Bénin ;
+5. diplôme et autres exigences obligatoires ;
+6. salaire lorsqu'il est indiqué ;
+7. date limite et actualité de l'offre ;
+8. pénalités importantes si l'offre vise clairement un autre métier, exige un niveau manifestement incompatible ou impose une compétence bloquante très éloignée du profil.
+
+Le score doit refléter ton jugement global :
+- 9-10 : excellente correspondance, offre clairement à cibler ;
+- 7-8.9 : bonne correspondance, quelques réserves ;
+- 6-6.9 : correspondance acceptable mais plusieurs réserves ;
+- 4-5.9 : faible correspondance ;
+- 0-3.9 : très mauvaise correspondance / autre métier.
+
+Score >= 6 = qualifiée.
+
+Tu dois faire l'analyse en interne, mais ne fournis PAS de raisonnement détaillé étape par étape ni de chaîne de pensée. Retourne uniquement les conclusions utiles et vérifiables qui expliquent le score.
+
+Réponds uniquement en JSON valide avec exactement ces champs :
+- score : nombre de 0 à 10
+- qualifie : true ou false
+- raison : explication concise de 1 à 3 phrases, directement liée aux éléments de l'annonce
+- points_forts : tableau de 1 à 4 éléments
+- points_faibles : tableau de 0 à 4 éléments
+
+Annonce à analyser :
+Titre: {job["title"]}
+Ville: {job.get("ville", "")}
+Diplôme: {job.get("diplome", "")}
+Salaire: {job.get("salaire", "")}
+Date de publication: {job["published"].strftime("%d/%m/%Y") if job.get("published") else ""}
+Date limite: {job["date_limite"].strftime("%d/%m/%Y") if job.get("date_limite") else ""}
+Détails de l'annonce: {job.get("summary", "")}'''
     response = requests.post(
         f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
         headers={"x-goog-api-key": GEMINI_API_KEY},
@@ -256,12 +294,16 @@ def format_job(job, result):
     date = job["published"].strftime("%d/%m/%Y") if job.get("published") else "date_inconnue"
     deadline = job["date_limite"].strftime("%d/%m/%Y") if job.get("date_limite") else "non précisée"
     extra = f"\n🏙 Ville : {job['ville']}" if job.get("ville") else ""
-    return f"💼 <b>OFFRE D’EMPLOI</b>\n\n📌 {job['title']}\n📅 Publication : {date}\n⏳ Date limite : {deadline}{extra}\n📡 Source : {job['source']}\n\n🔗 {job['link']}\n\n🤖 Score Gemini : {result['score']}/10"
+    strengths = result.get("points_forts", [])
+    weaknesses = result.get("points_faibles", [])
+    return f"💼 <b>OFFRE D’EMPLOI</b>\n\n📌 {job['title']}\n📅 Publication : {date}\n⏳ Date limite : {deadline}{extra}\n📡 Source : {job['source']}\n\n🤖 <b>Score Gemini : {result['score']}/10</b>\n🧠 <b>Pourquoi :</b> {result.get('raison', 'Non précisée')}\n\n✅ <b>Points forts :</b>\n" + "\n".join(f"• {item}" for item in strengths) + ("\n\n⚠️ <b>Points faibles :</b>\n" + "\n".join(f"• {item}" for item in weaknesses) if weaknesses else "") + f"\n\n🔗 {job['link']}"
 
 
 def format_rejected(job, result):
     date = job["published"].strftime("%d/%m/%Y") if job.get("published") else "date_inconnue"
-    return f"🗑 <b>REJETÉ</b>\n\n📌 {job['title']}\n📅 {date}\n📡 Source : {job['source']}\n🤖 Score Gemini : {result['score']}/10\n📝 Raison : {result.get('raison', 'Non précisée')}\n\n🔗 {job['link']}"
+    strengths = result.get("points_forts", [])
+    weaknesses = result.get("points_faibles", [])
+    return f"🗑 <b>REJETÉ</b>\n\n📌 {job['title']}\n📅 {date}\n📡 Source : {job['source']}\n🤖 <b>Score Gemini : {result['score']}/10</b>\n🧠 <b>Pourquoi :</b> {result.get('raison', 'Non précisée')}\n\n❌ <b>Points faibles :</b>\n" + "\n".join(f"• {item}" for item in weaknesses) + ("\n\n✅ <b>Points forts :</b>\n" + "\n".join(f"• {item}" for item in strengths) if strengths else "") + f"\n\n🔗 {job['link']}"
 
 
 def main():
