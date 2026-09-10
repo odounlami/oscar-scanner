@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Inspect HTML classes and offer-detail links")
+    parser = argparse.ArgumentParser(description="Inspect JobBenin HTML and one offer card")
     parser.add_argument("url")
     args = parser.parse_args()
     headers = {
@@ -34,8 +34,15 @@ def main():
     for cls, count in sorted(classes.items()):
         print(f"{cls}\t{count}")
 
-    print("\nOffer-detail links (URL containing /offres/...):")
-    pattern = re.compile(r"/offres/", re.I)
+    cards = soup.select(".job-bx")
+    print(f"\n.job-bx cards: {len(cards)}")
+    if cards:
+        print("\n===== FIRST .job-bx CARD: COMPLETE HTML =====\n")
+        print(cards[0].prettify())
+        print("\n===== END FIRST CARD =====")
+
+    print("\nOffer-detail links:")
+    pattern = re.compile(r"/(?:index\\.php/)?offres/", re.I)
     found = set()
     for tag in soup.find_all(["a", "area"]):
         href = tag.get("href", "")
