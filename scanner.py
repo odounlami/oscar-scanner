@@ -10,6 +10,8 @@ import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
+from sources import SOURCES
+
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -19,9 +21,6 @@ ENABLE_REJECTED_NOTIFICATIONS = os.getenv("ENABLE_REJECTED_NOTIFICATIONS", "true
 SEEN_FILE = "seen_posts.json"
 MAX_AGE_DAYS = 14
 BACKFILL_MODE = os.getenv("BACKFILL_MODE", "false").lower() == "true"
-EMPLOIBENIN_URL = "https://www.emploibenin.com/recherche-jobs-benin/informatique"
-JOBBENIN_URL = "https://jobbenin.com/index.php/offres/categorie/informatique"
-SOURCES = [("EmploiBenin", EMPLOIBENIN_URL), ("JobBenin", JOBBENIN_URL)]
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 
 
@@ -108,12 +107,10 @@ def extract_jobbenin(soup, url):
         title_node = card.select_one(".job-contant h4 a")
         if not title_node:
             continue
-
         title = clean(title_node.get_text(" "))
         href = title_node.get("href")
         if len(title) < 3 or not href:
             continue
-
         link = urljoin(url, href)
         detail = extract_jobbenin_detail(link)
         published = detail["published"]
@@ -129,19 +126,11 @@ def extract_jobbenin(soup, url):
             diploma = clean(diploma_node.parent.get_text(" "))
         salary = node_value(card, [".jobs-amount .amount"])
         summary = detail["detail_text"] or clean(card.get_text(" "))
-
         jobs.append({
-            "title": title,
-            "link": link,
-            "source": "JobBenin",
-            "ville": city or location,
-            "diplome": diploma,
-            "salaire": salary,
-            "published": published,
-            "date_limite": detail["date_limite"],
-            "reference": detail["reference"],
-            "date_inconnue": published is None,
-            "summary": summary[:5000],
+            "title": title, "link": link, "source": "JobBenin", "ville": city or location,
+            "diplome": diploma, "salaire": salary, "published": published,
+            "date_limite": detail["date_limite"], "reference": detail["reference"],
+            "date_inconnue": published is None, "summary": summary[:5000],
         })
     return jobs
 
@@ -191,12 +180,11 @@ def extract_generic(soup, source, url):
 
 
 def extract_jobs(source, url):
-    soup = fetch_soup(url)
     if source == "JobBenin":
-        return extract_jobbenin(soup, url)
+        return extract_jobbenin(fetch_soup(url), url)
     if source == "EmploiBenin":
-        return extract_emploibenin(soup, url)
-    return extract_generic(soup, source, url)
+        return extract_emploibenin(fetch_soup(url), url)
+    return extract_generic(fetch_soup(url), source, url)
 
 
 def is_recent(job):
@@ -210,14 +198,7 @@ def post_id(job):
     if job.get("reference"):
         key = f"{job['source']}:{job['reference']}"
     else:
-        key = "|".join([
-            job.get("source", ""),
-            normalize(job.get("title", "")),
-            normalize(job.get("ville", "")),
-            normalize(job.get("salaire", "")),
-            normalize(job.get("summary", ""))[:1500],
-            job["published"].strftime("%Y-%m-%d") if job.get("published") else "",
-        ])
+        key = "|".join([job.get("source", ""), normalize(job.get("title", "")), normalize(job.get("ville", "")), normalize(job.get("salaire", "")), normalize(job.get("summary", ""))[:1500], job["published"].strftime("%Y-%m-%d") if job.get("published") else ""])
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
@@ -263,15 +244,7 @@ Salaire: {job.get("salaire", "")}
 Date de publication: {job["published"].strftime("%d/%m/%Y") if job.get("published") else ""}
 Date limite: {job["date_limite"].strftime("%d/%m/%Y") if job.get("date_limite") else ""}
 Détails de l'annonce: {job.get("summary", "")}'''
-    response = requests.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
-        headers={"x-goog-api-key": GEMINI_API_KEY},
-        json={
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json"},
-        },
-        timeout=30,
-    )
+    response = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent", headers={"x-goog-api-key": GEMINI_API_KEY}, json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json"}}, timeout=30)
     try:
         response.raise_for_status()
     except requests.HTTPError as exc:
@@ -307,10 +280,13 @@ def format_rejected(job, result):
 
 
 def main():
-    print(f"🔍 Scanner lancé | backfill: {BACKFILL_MODE} | rejected: {ENABLE_REJECTED_NOTIFICATIONS} | Gemini: {GEMINI_MODEL}")
+    active = [source for source in SOURCES if source.get("active", False)]
+    print(f"🔍 Scanner lancé | sources actives: {len(active)} | backfill: {BACKFILL_MODE} | rejected: {ENABLE_REJECTED_NOTIFICATIONS} | Gemini: {GEMINI_MODEL}")
     seen, total = load_seen(), 0
     run_ids = set()
-    for source, url in SOURCES:
+    for config in active:
+        source = config["name"]
+        url = config["url"]
         try:
             jobs = extract_jobs(source, url)
             recent = [job for job in jobs if is_recent(job)]
