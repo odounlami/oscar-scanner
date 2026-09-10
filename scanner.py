@@ -52,15 +52,27 @@ def parse_date(value):
     if not value:
         return None
     value = clean(value).lower()
-    months = {"janvier":"01", "février":"02", "fevrier":"02", "mars":"03", "avril":"04", "mai":"05", "juin":"06", "juillet":"07", "août":"08", "aout":"08", "septembre":"09", "octobre":"10", "novembre":"11", "décembre":"12", "decembre":"12"}
-    for name, number in months.items():
-        value = value.replace(name, number)
+    months = {
+        "janvier": "01", "janv": "01", "février": "02", "fevrier": "02", "févr": "02", "fevr": "02",
+        "mars": "03", "avril": "04", "avr": "04", "mai": "05", "juin": "06",
+        "juillet": "07", "juil": "07", "août": "08", "aout": "08", "aoû": "08",
+        "septembre": "09", "sept": "09", "octobre": "10", "oct": "10", "novembre": "11", "nov": "11",
+        "décembre": "12", "decembre": "12", "déc": "12", "dec": "12",
+    }
+    for name, number in sorted(months.items(), key=lambda item: len(item[0]), reverse=True):
+        value = re.sub(rf"\b{re.escape(name)}\.?\b", number, value)
     for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d %m %Y"):
         try:
             return datetime.strptime(value[:10], fmt).replace(tzinfo=timezone.utc)
         except ValueError:
             pass
     match = re.search(r"(\d{1,2})[./-](\d{1,2})[./-](\d{4})", value)
+    if match:
+        try:
+            return datetime(*map(int, (match.group(3), match.group(2), match.group(1))), tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    match = re.search(r"\b(\d{1,2})\s+(\d{1,2})\s+(\d{4})\b", value)
     if match:
         try:
             return datetime(*map(int, (match.group(3), match.group(2), match.group(1))), tzinfo=timezone.utc)
@@ -154,6 +166,78 @@ def extract_emploibenin(soup, url):
     return jobs
 
 
+def extract_goafrica(soup, url):
+    """Extract Go Africa Online employment cards without using the generic extractor."""
+    jobs, seen = [], set()
+
+    # The diagnostic identified the offer title links as the reliable anchor.
+    title_links = soup.select("a.stretched-link[href]")
+    if not title_links:
+        title_links = soup.select("a[href*='/bj/emploi/']")
+
+    for title_node in title_links:
+        title = clean(title_node.get_text(" "))
+        href = title_node.get("href")
+        if len(title) < 5 or not href:
+            continue
+        link = urljoin(url, href)
+        if link in seen:
+            continue
+
+        # Walk up only until we reach a bounded offer container containing the
+        # publication marker. This avoids coupling the scanner to generated CSS classes.
+        card = title_node
+        best = None
+        for _ in range(8):
+            if not card.parent:
+                break
+            candidate = card.parent
+            text = clean(candidate.get_text(" "))
+            if "Posté le" in text and len(text) <= 4000:
+                best = candidate
+            if len(text) > 4000:
+                break
+            card = candidate
+        if best is None:
+            continue
+
+        text = clean(best.get_text(" | "))
+        published_match = re.search(r"Posté le\s+([^|]+)", text, re.I)
+        published = parse_date(published_match.group(1)) if published_match else parse_date(text)
+
+        # Go Africa cards expose the location and metadata as text. Keep the
+        # complete card text for Gemini so no useful requirement is discarded.
+        parts = [part.strip() for part in text.split(" | ") if part.strip()]
+        location = ""
+        for part in parts:
+            if re.search(r"\b(Cotonou|Abomey-Calavi|Porto-Novo|Parakou|Ouidah|Bohicon|Abomey|Sèmè|Seme|Allada|Lokossa|Natitingou|Djougou)\b", part, re.I):
+                location = part
+                break
+
+        company = ""
+        marker_index = next((i for i, part in enumerate(parts) if re.search(r"Posté le\s+", part, re.I)), -1)
+        if marker_index >= 0 and marker_index + 1 < len(parts):
+            company = parts[marker_index + 1]
+
+        jobs.append({
+            "title": title,
+            "link": link,
+            "source": "GoAfricaOnline",
+            "ville": location,
+            "diplome": "",
+            "salaire": "",
+            "published": published,
+            "date_limite": None,
+            "reference": None,
+            "date_inconnue": published is None,
+            "company": company,
+            "summary": text[:5000],
+        })
+        seen.add(link)
+
+    return jobs
+
+
 def extract_generic(soup, source, url):
     jobs, seen = [], set()
     for link in soup.select("a[href]"):
@@ -179,12 +263,19 @@ def extract_generic(soup, source, url):
     return jobs
 
 
-def extract_jobs(source, url):
-    if source == "JobBenin":
-        return extract_jobbenin(fetch_soup(url), url)
-    if source == "EmploiBenin":
-        return extract_emploibenin(fetch_soup(url), url)
-    return extract_generic(fetch_soup(url), source, url)
+def extract_jobs(config):
+    source = config["name"]
+    url = config["url"]
+    extractor = config.get("extractor", "generic")
+    soup = fetch_soup(url)
+    extractors = {
+        "jobbenin": extract_jobbenin,
+        "emploibenin": extract_emploibenin,
+        "goafrica": extract_goafrica,
+        "generic": lambda current_soup, current_url: extract_generic(current_soup, source, current_url),
+    }
+    extractor_fn = extractors.get(extractor, extractors["generic"])
+    return extractor_fn(soup, url)
 
 
 def is_recent(job):
@@ -286,9 +377,8 @@ def main():
     run_ids = set()
     for config in active:
         source = config["name"]
-        url = config["url"]
         try:
-            jobs = extract_jobs(source, url)
+            jobs = extract_jobs(config)
             recent = [job for job in jobs if is_recent(job)]
             print(f"→ {source}: {len(jobs)} annonces, {len(recent)} dans la fenêtre")
             for job in recent:
