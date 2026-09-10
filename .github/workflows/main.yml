@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "0 */2 * * *"
   workflow_dispatch:
+    inputs:
+      backfill_mode:
+        description: "Renvoyer les offres des 14 derniers jours"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   scan:
@@ -25,7 +31,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: seen_posts.json
-          key: seen-posts-${{ github.run_id }}
+          key: seen-posts-${{ github.ref_name }}
           restore-keys: seen-posts-
 
       - name: Lancer le scanner
@@ -37,4 +43,5 @@ jobs:
           ALERT_RSS_3: ${{ secrets.ALERT_RSS_3 }}
           ALERT_RSS_4: ${{ secrets.ALERT_RSS_4 }}
           ALERT_RSS_5: ${{ secrets.ALERT_RSS_5 }}
+          BACKFILL_MODE: ${{ inputs.backfill_mode || 'false' }}
         run: python scanner.py
