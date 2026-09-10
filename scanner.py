@@ -13,6 +13,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 SEEN_FILE = "seen_posts.json"
 MAX_AGE_DAYS = 14
+BACKFILL_MODE = os.getenv("BACKFILL_MODE", "false").lower() == "true"
 
 INTENT_PATTERNS = [
     "looking for", "we are looking", "need", "hire", "hiring",
@@ -93,11 +94,12 @@ def send(msg):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram non configuré")
         return
-    requests.post(
+    response = requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
         json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
         timeout=10
     )
+    response.raise_for_status()
 
 
 def format_lead(title, link, source, age):
@@ -120,10 +122,6 @@ def scan(name, url, seen):
 
     for entry in feed.entries:
         pid = post_id(entry)
-        if pid in seen:
-            continue
-        seen.add(pid)
-
         title = entry.get("title", "").strip()
         summary = entry.get("summary", "")
         link = entry.get("link", "")
@@ -132,16 +130,21 @@ def scan(name, url, seen):
 
         if not is_recent(entry):
             continue
-        if is_valid_lead(text):
-            send(format_lead(title, link, name, age))
-            found += 1
+        if not is_valid_lead(text):
+            continue
+        if not BACKFILL_MODE and pid in seen:
+            continue
+
+        send(format_lead(title, link, name, age))
+        found += 1
+        seen.add(pid)
 
     return found
 
 
 if __name__ == "__main__":
-    print("\n🔍 Scanner lancé", datetime.now())
-    send("🚀 Scanner lancé\nRecherche de leads qualifiés...")
+    print("\n🔍 Scanner lancé", datetime.now(), "| backfill:", BACKFILL_MODE)
+    send("🚀 Scanner lancé\nRecherche des offres des 14 derniers jours...")
 
     seen = load_seen()
     total = sum(scan(name, url, seen) for name, url in RSS_SOURCES)
