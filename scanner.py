@@ -1,38 +1,45 @@
-import feedparser
-import requests
 import json
 import os
+import re
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from urllib.parse import urljoin
+
+import requests
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
 SEEN_FILE = "seen_posts.json"
 MAX_AGE_DAYS = 14
 BACKFILL_MODE = os.getenv("BACKFILL_MODE", "false").lower() == "true"
 
-NOISE_PATTERNS = [
-    "top", "skills", "how to", "guide", "tutorial", "learn", "become",
-    "roadmap", "tips", "trends", "future", "career", "market", "analysis",
-    "report", "study", "formation", "cours", "astuce"
+SOURCES = [
+    ("EmploiBenin", "https://www.emploibenin.com/recherche-jobs-benin/cotonou"),
+    ("JobBenin", "https://jobbenin.com/index.php/offres"),
+    ("Offresdemplois.bj", "https://www.offresdemplois.bj/recherches/pays/Benin"),
 ]
 
-RSS_SOURCES = [
-    ("EmploiBenin", "https://www.emploibenin.com/rss"),
-    ("JobBenin", "https://www.jobbenin.com/rss"),
-    ("Offresdemplois.bj", "https://offresdemplois.bj/rss"),
-]
+JOB_TERMS = (
+    "emploi", "offre", "recrut", "développeur", "developpeur", "developer",
+    "devops", "frontend", "front-end", "backend", "back-end", "fullstack",
+    "full-stack", "angular", "react", "laravel", "python", "javascript",
+    "informatique", "technicien", "ingénieur", "ingenieur", "stage", "stagiaire",
+    "software", "web", "mobile", "réseau", "reseau", "système", "system"
+)
 
 
 def load_seen():
-    if os.path.exists(SEEN_FILE):
+    if not os.path.exists(SEEN_FILE):
+        return set()
+    try:
         with open(SEEN_FILE, encoding="utf-8") as f:
             return set(json.load(f))
-    return set()
+    except (OSError, ValueError):
+        return set()
 
 
 def save_seen(seen):
@@ -40,110 +47,121 @@ def save_seen(seen):
         json.dump(sorted(seen), f, ensure_ascii=False, indent=2)
 
 
-def post_id(entry):
-    return hashlib.sha256(
-        (entry.get("link", "") + entry.get("title", "")).encode("utf-8")
-    ).hexdigest()
+def clean(value):
+    return re.sub(r"\s+", " ", BeautifulSoup(value or "", "html.parser").get_text(" ")).strip()
 
 
-def parse_date(entry):
-    parsed = entry.get("published_parsed") or entry.get("updated_parsed")
-    if not parsed:
+def parse_date(value):
+    if not value:
         return None
-    try:
-        return datetime(*parsed[:6], tzinfo=timezone.utc)
-    except (TypeError, ValueError):
-        return None
+    value = clean(value).lower()
+    value = value.replace("janvier", "01").replace("février", "02").replace("fevrier", "02")
+    value = value.replace("mars", "03").replace("avril", "04").replace("mai", "05")
+    value = value.replace("juin", "06").replace("juillet", "07").replace("août", "08").replace("aout", "08")
+    value = value.replace("septembre", "09").replace("octobre", "10").replace("novembre", "11").replace("décembre", "12").replace("decembre", "12")
+    for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%d %m %Y"):
+        try:
+            return datetime.strptime(value[:10], fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    match = re.search(r"(\d{1,2})[./-](\d{1,2})[./-](\d{4})", value)
+    if match:
+        day, month, year = map(int, match.groups())
+        try:
+            return datetime(year, month, day, tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
 
 
-def age_in_days(entry):
-    published = parse_date(entry)
-    if published is None:
-        return None
-    return max(0, (datetime.now(timezone.utc) - published).days)
+def extract_date(node):
+    for item in node.select("time, .date, .job-date, .date-posted, [class*=date], [class*=Date]"):
+        value = item.get("datetime") or item.get_text(" ")
+        parsed = parse_date(value)
+        if parsed:
+            return parsed
+    parsed = parse_date(node.get_text(" "))
+    return parsed
 
 
-def is_recent(entry):
-    age = age_in_days(entry)
-    return age is not None and age <= MAX_AGE_DAYS
+def fetch(url):
+    response = requests.get(url, headers={"User-Agent": "Mozilla/5.0 OscarJobScanner/1.0"}, timeout=25)
+    response.raise_for_status()
+    return BeautifulSoup(response.text, "html.parser")
 
 
-def is_valid_job(entry):
-    title = entry.get("title", "").lower()
-    summary = entry.get("summary", "").lower()
-    text = f"{title} {summary}"
+def extract_jobs(source, url):
+    soup = fetch(url)
+    jobs = []
+    seen_links = set()
+    for link in soup.select("a[href]"):
+        title = clean(link.get_text(" "))
+        href = urljoin(url, link.get("href"))
+        if len(title) < 8 or href in seen_links or href.startswith("javascript:"):
+            continue
+        parent = link
+        for _ in range(4):
+            if parent.parent:
+                parent = parent.parent
+            text = clean(parent.get_text(" "))
+            if len(text) > len(title) + 20:
+                break
+        text = clean(parent.get_text(" "))
+        if not any(term in text.lower() or term in title.lower() for term in JOB_TERMS):
+            continue
+        published = extract_date(parent)
+        if not published:
+            continue
+        seen_links.add(href)
+        jobs.append({"title": title, "link": href, "source": source, "published": published, "summary": text[:500]})
+    return jobs
 
-    job_terms = [
-        "emploi", "offre", "recrutement", "recrute", "recherche",
-        "développeur", "developpeur", "developer", "devops", "frontend",
-        "front-end", "backend", "back-end", "fullstack", "full-stack",
-        "angular", "react", "laravel", "python", "javascript", "informatique",
-        "technicien", "ingénieur", "ingenieur", "stage", "stagiaire"
-    ]
 
-    return (
-        any(term in text for term in job_terms)
-        and not any(noise in text for noise in NOISE_PATTERNS)
-    )
+def is_recent(job):
+    cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
+    return cutoff <= job["published"] <= datetime.now(timezone.utc) + timedelta(days=1)
 
 
-def send(msg):
+def post_id(job):
+    return hashlib.sha256(job["link"].encode("utf-8")).hexdigest()
+
+
+def send(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram non configuré")
         return
-    response = requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
-        timeout=10
-    )
+    response = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML", "disable_web_page_preview": False}, timeout=15)
     response.raise_for_status()
 
 
-def format_job(title, link, source, age):
-    date_label = f"il y a {age} jour(s)" if age is not None else "date inconnue"
-    return (
-        f"💼 <b>OFFRE D’EMPLOI</b>\n\n"
-        f"📌 {title}\n\n"
-        f"📅 Publiée {date_label}\n"
-        f"📡 Source : {source}\n\n"
-        f"🔗 {link}"
-    )
+def format_job(job):
+    age = max(0, (datetime.now(timezone.utc) - job["published"]).days)
+    return f"💼 <b>OFFRE D’EMPLOI</b>\n\n📌 {job['title']}\n\n📅 Publiée il y a {age} jour(s)\n📡 Source : {job['source']}\n\n🔗 {job['link']}"
 
 
-def scan(name, url, seen):
-    feed = feedparser.parse(url)
-    print(f"→ {name} : {len(feed.entries)} entries")
-    found = 0
-
-    for entry in feed.entries:
-        pid = post_id(entry)
-        age = age_in_days(entry)
-
-        if not is_recent(entry):
-            continue
-        if not is_valid_job(entry):
-            continue
-        if not BACKFILL_MODE and pid in seen:
-            continue
-
-        send(format_job(entry.get("title", "Offre d’emploi"), entry.get("link", ""), name, age))
-        found += 1
-        seen.add(pid)
-
-    return found
+def main():
+    print(f"🔍 Scanner lancé | backfill: {BACKFILL_MODE}")
+    send("🚀 Scanner lancé\nRecherche des offres d’emploi béninoises des 14 derniers jours...")
+    seen = load_seen()
+    total = 0
+    for source, url in SOURCES:
+        try:
+            jobs = extract_jobs(source, url)
+            recent = [job for job in jobs if is_recent(job)]
+            print(f"→ {source}: {len(jobs)} annonces trouvées, {len(recent)} récentes")
+            for job in recent:
+                pid = post_id(job)
+                if not BACKFILL_MODE and pid in seen:
+                    continue
+                send(format_job(job))
+                seen.add(pid)
+                total += 1
+        except Exception as exc:
+            print(f"❌ {source}: {type(exc).__name__}: {exc}")
+    save_seen(seen)
+    send(f"✅ Terminé\n💼 {total} offres d’emploi détectées" if total else "⚠️ Aucune offre d’emploi béninoise récente détectée")
+    print(f"Terminé: {total}")
 
 
 if __name__ == "__main__":
-    print("\n🔍 Scanner lancé", datetime.now(), "| backfill:", BACKFILL_MODE)
-    send("🚀 Scanner lancé\nRecherche des offres d’emploi béninoises des 14 derniers jours...")
-
-    seen = load_seen()
-    total = sum(scan(name, url, seen) for name, url in RSS_SOURCES)
-    save_seen(seen)
-
-    if total == 0:
-        send("⚠️ Aucune offre d’emploi béninoise récente détectée")
-    else:
-        send(f"✅ Terminé\n💼 {total} offres d’emploi détectées")
-
-    print("Terminé:", total)
+    main()
