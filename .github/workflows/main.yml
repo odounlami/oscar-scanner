@@ -31,13 +31,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: seen_posts.json
-          key: seen-posts-${{ github.ref_name }}
-          restore-keys: seen-posts-
+          key: seen-posts-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            seen-posts-${{ github.ref_name }}-
+            seen-posts-
 
       - name: Lancer le scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          BACKFILL_MODE: ${{ inputs.backfill_mode || 'false' }}
+          BACKFILL_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.backfill_mode || false }}
         run: python scanner.py
