@@ -2,6 +2,7 @@ import json
 import os
 import re
 import hashlib
+import unicodedata
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urljoin
 
@@ -40,6 +41,13 @@ def clean(value):
     return re.sub(r"\s+", " ", BeautifulSoup(value or "", "html.parser").get_text(" ")).strip()
 
 
+def normalize(value):
+    value = clean(value).lower()
+    value = unicodedata.normalize("NFKD", value)
+    value = "".join(c for c in value if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]+", " ", value).strip()
+
+
 def parse_date(value):
     if not value:
         return None
@@ -75,6 +83,24 @@ def node_value(node, selectors):
     return ""
 
 
+def extract_jobbenin_detail(link):
+    try:
+        soup = fetch_soup(link)
+        text = clean(soup.get_text(" "))
+        added_match = re.search(r"Date d'ajout\s*:?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{4})", text, re.I)
+        deadline_match = re.search(r"Date limite\s*:?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{4})", text, re.I)
+        reference_match = re.search(r"Réf\s*:\s*([A-Za-z0-9_-]+)", text, re.I)
+        return {
+            "published": parse_date(added_match.group(1)) if added_match else None,
+            "date_limite": parse_date(deadline_match.group(1)) if deadline_match else None,
+            "reference": reference_match.group(1) if reference_match else None,
+            "detail_text": text,
+        }
+    except Exception as exc:
+        print(f"[JobBenin] détail inaccessible {link}: {type(exc).__name__}: {exc}")
+        return {"published": None, "date_limite": None, "reference": None, "detail_text": ""}
+
+
 def extract_jobbenin(soup, url):
     jobs = []
     for card in soup.select(".job-bx"):
@@ -87,7 +113,9 @@ def extract_jobbenin(soup, url):
         if len(title) < 3 or not href:
             continue
 
-        published = parse_date(node_value(card, [".job-day"]))
+        link = urljoin(url, href)
+        detail = extract_jobbenin_detail(link)
+        published = detail["published"]
         location = node_value(card, [".job-contant p:nth-of-type(1)"])
         details = card.select_one(".job-contant p:nth-of-type(2)")
         details_text = clean(details.get_text(" ") if details else "")
@@ -100,17 +128,20 @@ def extract_jobbenin(soup, url):
         if diploma_node:
             diploma = clean(diploma_node.parent.get_text(" "))
         salary = node_value(card, [".jobs-amount .amount"])
+        summary = detail["detail_text"] or clean(card.get_text(" "))
 
         jobs.append({
             "title": title,
-            "link": urljoin(url, href),
+            "link": link,
             "source": "JobBenin",
             "ville": city or location,
             "diplome": diploma,
             "salaire": salary,
             "published": published,
+            "date_limite": detail["date_limite"],
+            "reference": detail["reference"],
             "date_inconnue": published is None,
-            "summary": clean(card.get_text(" "))[:1000],
+            "summary": summary[:5000],
         })
     return jobs
 
@@ -129,7 +160,7 @@ def extract_emploibenin(soup, url):
             continue
         text = clean(card.get_text(" "))
         published = parse_date(node_value(card, ["time", ".date", ".job-date", ".date-posted", "[class*=date]"]) or text)
-        jobs.append({"title": title, "link": href, "source": "EmploiBenin", "ville": node_value(card, [".ville", ".city", ".field-name-field-offre-region", "[class*=region]"]) or ("Cotonou" if "cotonou" in text.lower() else ""), "diplome": node_value(card, [".diplome", ".education", "[class*=etude]", "[class*=diplome]"]), "salaire": node_value(card, [".salaire", ".salary", "[class*=salaire]"]), "published": published, "date_inconnue": published is None, "summary": text[:1000]})
+        jobs.append({"title": title, "link": href, "source": "EmploiBenin", "ville": node_value(card, [".ville", ".city", ".field-name-field-offre-region", "[class*=region]"]) or ("Cotonou" if "cotonou" in text.lower() else ""), "diplome": node_value(card, [".diplome", ".education", "[class*=etude]", "[class*=diplome]"]), "salaire": node_value(card, [".salaire", ".salary", "[class*=salaire]"]), "published": published, "date_limite": None, "reference": None, "date_inconnue": published is None, "summary": text[:1000]})
         seen.add(href)
     return jobs
 
@@ -155,7 +186,7 @@ def extract_generic(soup, source, url):
             continue
         published = parse_date(node_value(parent, ["time", ".date", ".job-date", ".date-posted", "[class*=date]"]) or text)
         seen.add(href)
-        jobs.append({"title": title, "link": href, "source": source, "ville": "", "diplome": "", "salaire": "", "published": published, "date_inconnue": published is None, "summary": text[:1000]})
+        jobs.append({"title": title, "link": href, "source": source, "ville": "", "diplome": "", "salaire": "", "published": published, "date_limite": None, "reference": None, "date_inconnue": published is None, "summary": text[:1000]})
     return jobs
 
 
@@ -169,20 +200,31 @@ def extract_jobs(source, url):
 
 
 def is_recent(job):
-    if job["date_inconnue"]:
-        return True
+    if not job.get("published"):
+        return False
     now = datetime.now(timezone.utc)
     return now - timedelta(days=MAX_AGE_DAYS) <= job["published"] <= now + timedelta(days=1)
 
 
 def post_id(job):
-    return hashlib.sha256(job["link"].encode("utf-8")).hexdigest()
+    if job.get("reference"):
+        key = f"{job['source']}:{job['reference']}"
+    else:
+        key = "|".join([
+            job.get("source", ""),
+            normalize(job.get("title", "")),
+            normalize(job.get("ville", "")),
+            normalize(job.get("salaire", "")),
+            normalize(job.get("summary", ""))[:1500],
+            job["published"].strftime("%Y-%m-%d") if job.get("published") else "",
+        ])
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 def gemini_classify(job):
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY manquante")
-    prompt = f'''Classe cette annonce pour un développeur web/IT au Bénin. Réponds uniquement en JSON avec score (0 à 10), qualifie (true/false) et raison courte. Score >= 6 = qualifiée.\nTitre: {job["title"]}\nVille: {job.get("ville", "")}\nDiplôme: {job.get("diplome", "")}\nSalaire: {job.get("salaire", "")}\nRésumé: {job.get("summary", "")}'''
+    prompt = f'''Classe cette annonce pour un développeur web/IT au Bénin. Réponds uniquement en JSON avec score (0 à 10), qualifie (true/false) et raison courte. Score >= 6 = qualifiée.\nTitre: {job["title"]}\nVille: {job.get("ville", "")}\nDiplôme: {job.get("diplome", "")}\nSalaire: {job.get("salaire", "")}\nDate de publication: {job["published"].strftime("%d/%m/%Y") if job.get("published") else ""}\nDate limite: {job["date_limite"].strftime("%d/%m/%Y") if job.get("date_limite") else ""}\nDétails de l'annonce: {job.get("summary", "")}'''
     response = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}", json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json"}}, timeout=30)
     response.raise_for_status()
     result = json.loads(response.json()["candidates"][0]["content"]["parts"][0]["text"])
@@ -199,19 +241,21 @@ def send(message):
 
 
 def format_job(job, result):
-    date = job["published"].strftime("%d/%m/%Y") if job["published"] else "date_inconnue"
+    date = job["published"].strftime("%d/%m/%Y") if job.get("published") else "date_inconnue"
+    deadline = job["date_limite"].strftime("%d/%m/%Y") if job.get("date_limite") else "non précisée"
     extra = f"\n🏙 Ville : {job['ville']}" if job.get("ville") else ""
-    return f"💼 <b>OFFRE D’EMPLOI</b>\n\n📌 {job['title']}\n📅 {date}{extra}\n📡 Source : {job['source']}\n\n🔗 {job['link']}\n\n🤖 Score Gemini : {result['score']}/10"
+    return f"💼 <b>OFFRE D’EMPLOI</b>\n\n📌 {job['title']}\n📅 Publication : {date}\n⏳ Date limite : {deadline}{extra}\n📡 Source : {job['source']}\n\n🔗 {job['link']}\n\n🤖 Score Gemini : {result['score']}/10"
 
 
 def format_rejected(job, result):
-    date = job["published"].strftime("%d/%m/%Y") if job["published"] else "date_inconnue"
+    date = job["published"].strftime("%d/%m/%Y") if job.get("published") else "date_inconnue"
     return f"🗑 <b>REJETÉ</b>\n\n📌 {job['title']}\n📅 {date}\n📡 Source : {job['source']}\n🤖 Score Gemini : {result['score']}/10\n📝 Raison : {result.get('raison', 'Non précisée')}\n\n🔗 {job['link']}"
 
 
 def main():
     print(f"🔍 Scanner lancé | backfill: {BACKFILL_MODE} | rejected: {ENABLE_REJECTED_NOTIFICATIONS}")
     seen, total = load_seen(), 0
+    run_ids = set()
     for source, url in SOURCES:
         try:
             jobs = extract_jobs(source, url)
@@ -219,13 +263,16 @@ def main():
             print(f"→ {source}: {len(jobs)} annonces, {len(recent)} dans la fenêtre")
             for job in recent:
                 pid = post_id(job)
+                if pid in run_ids:
+                    print(f"↪️ Doublon dans le run: {job['title']}")
+                    continue
+                run_ids.add(pid)
                 if not BACKFILL_MODE and pid in seen:
                     continue
                 try:
                     result = gemini_classify(job)
                 except Exception as exc:
                     print(f"⚠️ Classification échouée ({source}): {job['title']} — {type(exc).__name__}: {exc}")
-                    seen.add(pid + ":erreur_classification")
                     continue
                 if result["qualifie"]:
                     send(format_job(job, result))
