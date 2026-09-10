@@ -14,11 +14,13 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+ENABLE_REJECTED_NOTIFICATIONS = os.getenv("ENABLE_REJECTED_NOTIFICATIONS", "true").lower() == "true"
 SEEN_FILE = "seen_posts.json"
 MAX_AGE_DAYS = 14
 BACKFILL_MODE = os.getenv("BACKFILL_MODE", "false").lower() == "true"
+EMPLOIBENIN_URL = "https://www.emploibenin.com/recherche-jobs-benin/informatique"
 JOBBENIN_URL = "https://jobbenin.com/index.php/offres/categorie/informatique"
-SOURCES = [("EmploiBenin", "https://www.emploibenin.com/recherche-jobs-benin/cotonou"), ("JobBenin", JOBBENIN_URL)]
+SOURCES = [("EmploiBenin", EMPLOIBENIN_URL), ("JobBenin", JOBBENIN_URL)]
 
 
 def load_seen():
@@ -82,10 +84,31 @@ def extract_jobbenin(soup, url):
         if not link or not title_node:
             continue
         title = clean(title_node.get_text(" "))
+        if len(title) < 8:
+            continue
         href = urljoin(url, link.get("href"))
         date_text = node_value(card, ["time", ".date", ".job-date", ".date-posted", "[class*=date]"])
-        published = parse_date(date_text)
+        published = parse_date(date_text or card.get_text(" "))
         jobs.append({"title": title, "link": href, "source": "JobBenin", "ville": node_value(card, [".ville", ".city", "[class*=ville]", "[class*=city]"]), "diplome": node_value(card, [".diplome", ".education", "[class*=diplome]", "[class*=education]"]), "salaire": node_value(card, [".salaire", ".salary", "[class*=salaire]", "[class*=salary]"]), "published": published, "date_inconnue": published is None, "summary": clean(card.get_text(" "))[:1000]})
+    return jobs
+
+
+def extract_emploibenin(soup, url):
+    jobs, seen = [], set()
+    cards = soup.select("article, .views-row, .job-listing, .list-offer, .offre, .offer, .job-item")
+    for card in cards:
+        link = card.select_one("a[href]")
+        title_node = card.select_one("h1, h2, h3, h4, .title, .job-title, .offer-title, .views-field-title")
+        if not link or not title_node:
+            continue
+        title = clean(title_node.get_text(" "))
+        href = urljoin(url, link.get("href"))
+        if len(title) < 8 or href in seen:
+            continue
+        text = clean(card.get_text(" "))
+        published = parse_date(node_value(card, ["time", ".date", ".job-date", ".date-posted", "[class*=date]"]) or text)
+        jobs.append({"title": title, "link": href, "source": "EmploiBenin", "ville": node_value(card, [".ville", ".city", ".field-name-field-offre-region", "[class*=region]"]) or ("Cotonou" if "cotonou" in text.lower() else ""), "diplome": node_value(card, [".diplome", ".education", "[class*=etude]", "[class*=diplome]"]), "salaire": node_value(card, [".salaire", ".salary", "[class*=salaire]"]), "published": published, "date_inconnue": published is None, "summary": text[:1000]})
+        seen.add(href)
     return jobs
 
 
@@ -98,8 +121,13 @@ def extract_generic(soup, source, url):
             continue
         parent = link
         for _ in range(4):
-            if parent.parent:
-                parent = parent.parent
+            if not parent.parent:
+                break
+            candidate = parent.parent
+            candidate_text = clean(candidate.get_text(" "))
+            if len(candidate_text) > 2500:
+                break
+            parent = candidate
         text = clean(parent.get_text(" "))
         if len(text) < len(title) + 10:
             continue
@@ -111,7 +139,11 @@ def extract_generic(soup, source, url):
 
 def extract_jobs(source, url):
     soup = fetch_soup(url)
-    return extract_jobbenin(soup, url) if source == "JobBenin" else extract_generic(soup, source, url)
+    if source == "JobBenin":
+        return extract_jobbenin(soup, url)
+    if source == "EmploiBenin":
+        return extract_emploibenin(soup, url)
+    return extract_generic(soup, source, url)
 
 
 def is_recent(job):
@@ -131,8 +163,7 @@ def gemini_classify(job):
     prompt = f'''Classe cette annonce pour un développeur web/IT au Bénin. Réponds uniquement en JSON avec score (0 à 10), qualifie (true/false) et raison courte. Score >= 6 = qualifiée.\nTitre: {job["title"]}\nVille: {job.get("ville", "")}\nDiplôme: {job.get("diplome", "")}\nSalaire: {job.get("salaire", "")}\nRésumé: {job.get("summary", "")}'''
     response = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}", json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json"}}, timeout=30)
     response.raise_for_status()
-    text = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-    result = json.loads(text)
+    result = json.loads(response.json()["candidates"][0]["content"]["parts"][0]["text"])
     result["score"] = float(result.get("score", 0))
     result["qualifie"] = result["score"] >= 6
     return result
@@ -157,7 +188,7 @@ def format_rejected(job, result):
 
 
 def main():
-    print(f"🔍 Scanner lancé | backfill: {BACKFILL_MODE}")
+    print(f"🔍 Scanner lancé | backfill: {BACKFILL_MODE} | rejected: {ENABLE_REJECTED_NOTIFICATIONS}")
     seen, total = load_seen(), 0
     for source, url in SOURCES:
         try:
@@ -168,8 +199,16 @@ def main():
                 pid = post_id(job)
                 if not BACKFILL_MODE and pid in seen:
                     continue
-                result = gemini_classify(job)
-                send(format_job(job, result) if result["qualifie"] else format_rejected(job, result))
+                try:
+                    result = gemini_classify(job)
+                except Exception as exc:
+                    print(f"⚠️ Classification échouée ({source}): {job['title']} — {type(exc).__name__}: {exc}")
+                    seen.add(pid + ":erreur_classification")
+                    continue
+                if result["qualifie"]:
+                    send(format_job(job, result))
+                elif ENABLE_REJECTED_NOTIFICATIONS:
+                    send(format_rejected(job, result))
                 seen.add(pid)
                 total += 1
         except Exception as exc:
