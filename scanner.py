@@ -22,7 +22,7 @@ BACKFILL_MODE = os.getenv("BACKFILL_MODE", "false").lower() == "true"
 EMPLOIBENIN_URL = "https://www.emploibenin.com/recherche-jobs-benin/informatique"
 JOBBENIN_URL = "https://jobbenin.com/index.php/offres/categorie/informatique"
 SOURCES = [("EmploiBenin", EMPLOIBENIN_URL), ("JobBenin", JOBBENIN_URL)]
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
 
 
 def load_seen():
@@ -234,7 +234,11 @@ def gemini_classify(job):
         },
         timeout=30,
     )
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        detail = response.text[:500].replace("\n", " ")
+        raise RuntimeError(f"Gemini {response.status_code}: {detail}") from exc
     result = json.loads(response.json()["candidates"][0]["content"]["parts"][0]["text"])
     result["score"] = float(result.get("score", 0))
     result["qualifie"] = result["score"] >= 6
