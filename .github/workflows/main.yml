@@ -25,7 +25,7 @@ jobs:
           python-version: "3.11"
 
       - name: Installer les dépendances
-        run: pip install feedparser requests python-dotenv
+        run: pip install requests python-dotenv beautifulsoup4
 
       - name: Restaurer seen_posts.json (cache)
         uses: actions/cache@v4
@@ -38,10 +38,5 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          ALERT_RSS_1: ${{ secrets.ALERT_RSS_1 }}
-          ALERT_RSS_2: ${{ secrets.ALERT_RSS_2 }}
-          ALERT_RSS_3: ${{ secrets.ALERT_RSS_3 }}
-          ALERT_RSS_4: ${{ secrets.ALERT_RSS_4 }}
-          ALERT_RSS_5: ${{ secrets.ALERT_RSS_5 }}
           BACKFILL_MODE: ${{ inputs.backfill_mode || 'false' }}
         run: python scanner.py
