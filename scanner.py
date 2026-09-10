@@ -22,6 +22,7 @@ BACKFILL_MODE = os.getenv("BACKFILL_MODE", "false").lower() == "true"
 EMPLOIBENIN_URL = "https://www.emploibenin.com/recherche-jobs-benin/informatique"
 JOBBENIN_URL = "https://jobbenin.com/index.php/offres/categorie/informatique"
 SOURCES = [("EmploiBenin", EMPLOIBENIN_URL), ("JobBenin", JOBBENIN_URL)]
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
 
 
 def load_seen():
@@ -118,7 +119,6 @@ def extract_jobbenin(soup, url):
         published = detail["published"]
         location = node_value(card, [".job-contant p:nth-of-type(1)"])
         details = card.select_one(".job-contant p:nth-of-type(2)")
-        details_text = clean(details.get_text(" ") if details else "")
         city = ""
         diploma = ""
         city_node = details.select_one(".fa-city") if details else None
@@ -225,7 +225,15 @@ def gemini_classify(job):
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY manquante")
     prompt = f'''Classe cette annonce pour un développeur web/IT au Bénin. Réponds uniquement en JSON avec score (0 à 10), qualifie (true/false) et raison courte. Score >= 6 = qualifiée.\nTitre: {job["title"]}\nVille: {job.get("ville", "")}\nDiplôme: {job.get("diplome", "")}\nSalaire: {job.get("salaire", "")}\nDate de publication: {job["published"].strftime("%d/%m/%Y") if job.get("published") else ""}\nDate limite: {job["date_limite"].strftime("%d/%m/%Y") if job.get("date_limite") else ""}\nDétails de l'annonce: {job.get("summary", "")}'''
-    response = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}", json={"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json"}}, timeout=30)
+    response = requests.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
+        headers={"x-goog-api-key": GEMINI_API_KEY},
+        json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"responseMimeType": "application/json"},
+        },
+        timeout=30,
+    )
     response.raise_for_status()
     result = json.loads(response.json()["candidates"][0]["content"]["parts"][0]["text"])
     result["score"] = float(result.get("score", 0))
@@ -253,7 +261,7 @@ def format_rejected(job, result):
 
 
 def main():
-    print(f"🔍 Scanner lancé | backfill: {BACKFILL_MODE} | rejected: {ENABLE_REJECTED_NOTIFICATIONS}")
+    print(f"🔍 Scanner lancé | backfill: {BACKFILL_MODE} | rejected: {ENABLE_REJECTED_NOTIFICATIONS} | Gemini: {GEMINI_MODEL}")
     seen, total = load_seen(), 0
     run_ids = set()
     for source, url in SOURCES:
