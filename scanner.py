@@ -15,26 +15,16 @@ SEEN_FILE = "seen_posts.json"
 MAX_AGE_DAYS = 14
 BACKFILL_MODE = os.getenv("BACKFILL_MODE", "false").lower() == "true"
 
-INTENT_PATTERNS = [
-    "looking for", "we are looking", "need", "hire", "hiring",
-    "seeking", "freelancer needed", "require", "wanted",
-    "cherche", "recherche", "besoin", "recrute",
-    "need a developer", "need a website", "build a website",
-    "web developer", "freelance developer", "create website",
-    "développeur", "développeur web", "développeur logiciel",
-    "recrutement", "offre d'emploi", "emploi"
-]
-
 NOISE_PATTERNS = [
-    "top", "skills", "how to", "guide", "tutorial",
-    "learn", "become", "roadmap", "tips", "trends",
-    "future", "career", "market", "analysis", "report", "study"
+    "top", "skills", "how to", "guide", "tutorial", "learn", "become",
+    "roadmap", "tips", "trends", "future", "career", "market", "analysis",
+    "report", "study", "formation", "cours", "astuce"
 ]
 
 RSS_SOURCES = [
-    ("Google Dev Intent", "https://news.google.com/rss/search?q=looking+for+developer+website&hl=en&gl=US&ceid=US:en"),
-    ("Google Hire Dev", "https://news.google.com/rss/search?q=hire+freelance+developer+website&hl=en&gl=US&ceid=US:en"),
-    ("Google FR Intent", "https://news.google.com/rss/search?q=besoin+site+web+developpeur&hl=fr&gl=FR&ceid=FR:fr"),
+    ("EmploiBenin", "https://www.emploibenin.com/rss"),
+    ("JobBenin", "https://www.jobbenin.com/rss"),
+    ("Offresdemplois.bj", "https://offresdemplois.bj/rss"),
 ]
 
 
@@ -54,14 +44,6 @@ def post_id(entry):
     return hashlib.sha256(
         (entry.get("link", "") + entry.get("title", "")).encode("utf-8")
     ).hexdigest()
-
-
-def is_noise(text):
-    return any(n in text.lower() for n in NOISE_PATTERNS)
-
-
-def is_intent(text):
-    return any(p in text.lower() for p in INTENT_PATTERNS)
 
 
 def parse_date(entry):
@@ -86,8 +68,23 @@ def is_recent(entry):
     return age is not None and age <= MAX_AGE_DAYS
 
 
-def is_valid_lead(text):
-    return is_intent(text) and not is_noise(text)
+def is_valid_job(entry):
+    title = entry.get("title", "").lower()
+    summary = entry.get("summary", "").lower()
+    text = f"{title} {summary}"
+
+    job_terms = [
+        "emploi", "offre", "recrutement", "recrute", "recherche",
+        "développeur", "developpeur", "developer", "devops", "frontend",
+        "front-end", "backend", "back-end", "fullstack", "full-stack",
+        "angular", "react", "laravel", "python", "javascript", "informatique",
+        "technicien", "ingénieur", "ingenieur", "stage", "stagiaire"
+    ]
+
+    return (
+        any(term in text for term in job_terms)
+        and not any(noise in text for noise in NOISE_PATTERNS)
+    )
 
 
 def send(msg):
@@ -102,16 +99,14 @@ def send(msg):
     response.raise_for_status()
 
 
-def format_lead(title, link, source, age):
+def format_job(title, link, source, age):
     date_label = f"il y a {age} jour(s)" if age is not None else "date inconnue"
     return (
-        f"🔥 <b>LEAD QUALIFIÉ</b>\n\n"
+        f"💼 <b>OFFRE D’EMPLOI</b>\n\n"
         f"📌 {title}\n\n"
-        f"💡 Intention détectée : besoin de développeur / site web\n"
-        f"📅 Publiée {date_label}\n\n"
-        f"🔗 {link}\n"
-        f"📡 {source}\n\n"
-        f"👉 Action : proposer site vitrine simple + rapide"
+        f"📅 Publiée {date_label}\n"
+        f"📡 Source : {source}\n\n"
+        f"🔗 {link}"
     )
 
 
@@ -122,20 +117,16 @@ def scan(name, url, seen):
 
     for entry in feed.entries:
         pid = post_id(entry)
-        title = entry.get("title", "").strip()
-        summary = entry.get("summary", "")
-        link = entry.get("link", "")
-        text = f"{title} {summary}"
         age = age_in_days(entry)
 
         if not is_recent(entry):
             continue
-        if not is_valid_lead(text):
+        if not is_valid_job(entry):
             continue
         if not BACKFILL_MODE and pid in seen:
             continue
 
-        send(format_lead(title, link, name, age))
+        send(format_job(entry.get("title", "Offre d’emploi"), entry.get("link", ""), name, age))
         found += 1
         seen.add(pid)
 
@@ -144,15 +135,15 @@ def scan(name, url, seen):
 
 if __name__ == "__main__":
     print("\n🔍 Scanner lancé", datetime.now(), "| backfill:", BACKFILL_MODE)
-    send("🚀 Scanner lancé\nRecherche des offres des 14 derniers jours...")
+    send("🚀 Scanner lancé\nRecherche des offres d’emploi béninoises des 14 derniers jours...")
 
     seen = load_seen()
     total = sum(scan(name, url, seen) for name, url in RSS_SOURCES)
     save_seen(seen)
 
     if total == 0:
-        send("⚠️ Aucun lead qualifié détecté aujourd’hui")
+        send("⚠️ Aucune offre d’emploi béninoise récente détectée")
     else:
-        send(f"✅ Terminé\n🎯 {total} leads qualifiés")
+        send(f"✅ Terminé\n💼 {total} offres d’emploi détectées")
 
     print("Terminé:", total)
